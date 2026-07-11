@@ -82,6 +82,20 @@ def board_url():
     return f"http://{host}:{port}"
 
 
+def crew_domain():
+    """The domain the demo round-table names. Pulled from fleet.json's "domain" so a
+    customized crew updates the script -- with a friendly fallback so a fresh run never
+    prints a raw <...> placeholder token."""
+    dom = ""
+    cfg = REPO / "fleet.json"
+    if cfg.exists():
+        try:
+            dom = str(json.loads(cfg.read_text(encoding="utf-8")).get("domain", "")).strip()
+        except Exception:
+            dom = ""
+    return dom if dom and not dom.startswith("<") else "your product"
+
+
 def wait_healthy(url, tries=60):
     for _ in range(tries):
         try:
@@ -171,7 +185,25 @@ def main():
         procs[0].terminate()
         return 1
 
-    print("[run] board healthy. launching the crew ..." + ("  [LIVE: agents reply via claude -- spends tokens]" if live else ""))
+    print("[run] board healthy.")
+
+    # Open the UI BEFORE the crew posts, so a first-time viewer watches the agents arrive
+    # and the round-table unfold live -- and (after one click, which the browser's autoplay
+    # rule requires) hears them -- instead of opening to an already-finished transcript.
+    print("\n" + "=" * 62)
+    print(f"  FleetChat is live  ->  {url}/")
+    print("  Open it in a browser to watch the crew assemble.")
+    if demo:
+        print("  Scripted demo -- run `python run.py --live` to make them think + speak for real.")
+    print("  Stop with Ctrl-C here -- don't just close the window.")
+    print("=" * 62 + "\n")
+    if os.environ.get("FLEETCHAT_NO_BROWSER") != "1":
+        try:
+            webbrowser.open(url + "/")
+        except Exception:
+            pass
+
+    print("[run] launching the crew ..." + ("  [LIVE: agents reply via claude -- spends tokens]" if live else ""))
     for name in load_crew():
         procs.append(subprocess.Popen([PY, str(REPO / "agents" / "run_agent.py"), name]))
         labels.append(name)
@@ -198,20 +230,12 @@ def main():
     if demo:
         time.sleep(1.5)  # let the joins land first
         board = Board()
+        domain = crew_domain()
         for sender, text in ROUND_TABLE:
-            board.post(sender, text, tags=["round-table"])
+            board.post(sender, text.replace("<YOUR DOMAIN>", domain), tags=["round-table"])
             time.sleep(1.3)
 
-    print("\n" + "=" * 62)
-    print(f"  FleetChat is live  ->  {url}/")
-    print("  Open it in a browser to watch the crew.")
-    print("  Stop with Ctrl-C here -- don't just close the window.")
-    print("=" * 62 + "\n")
-    if os.environ.get("FLEETCHAT_NO_BROWSER") != "1":
-        try:
-            webbrowser.open(url + "/")
-        except Exception:
-            pass
+    print("[run] the crew is live -- watching the board. Ctrl-C to stop.")
 
     try:
         procs[0].wait()  # wait on the board; Ctrl-C tears the whole crew down
