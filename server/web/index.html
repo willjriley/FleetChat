@@ -146,6 +146,17 @@
   }
   (function(){ var b=$("#mute"); if(!b) return; if(!window.speechSynthesis){ b.style.display="none"; return; } b.textContent = muted ? "🔇" : "🔊"; b.addEventListener("click", function(){ setMuted(!muted); }); })();
 
+  // Browsers stay silent until the first user gesture (anti-autoplay). Prime the speech
+  // engine on the first click/keypress so agent voices work the moment the user engages.
+  (function(){
+    if(!window.speechSynthesis) return;
+    function prime(){
+      document.removeEventListener("pointerdown", prime); document.removeEventListener("keydown", prime);
+      try{ var u=new SpeechSynthesisUtterance(" "); u.volume=0; speechSynthesis.speak(u); }catch(e){}
+    }
+    document.addEventListener("pointerdown", prime); document.addEventListener("keydown", prime);
+  })();
+
   // ---------- safe rich rendering (escape FIRST, then formatting) ----------
   function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 
