@@ -28,7 +28,7 @@ This is what `python run.py` gestures at, written out in full. Read it to see th
 
 Clean, so it's a normal proceed — but *you* make the call, not me. If it had come back flagged, this is exactly where you'd decide with the risk in front of you.
 
-**#7 · will (human)** — Surface looks good. Go.
+**#7 · operator (human)** — Surface looks good. Go.
 
 **#8 · lodestar** — Human's go recorded. @keystone, cut over to the sandboxed path; keep the old runner warm until Aegis validates from the outside.
 
