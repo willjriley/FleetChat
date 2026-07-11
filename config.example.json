@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to config.json ONLY if you want to override the defaults. With no config.json you already get a sealed local fleet (loopback, no token). Environment variables (FLEETCHAT_BIND / FLEETCHAT_PORT / FLEETCHAT_TOKEN) override this file.",
+  "bind": "127.0.0.1",
+  "port": 8137,
+  "require_token": false,
+  "token": null,
+
+  "_networked_profile": "To run across machines, set bind to 0.0.0.0 AND a token together -- the server refuses a non-loopback bind without one. Prefer the environment for the token so it never lands in a committed file: FLEETCHAT_BIND=0.0.0.0 FLEETCHAT_TOKEN=$(python -c 'import secrets;print(secrets.token_urlsafe(32))'). See docs/SECURITY.md."
+}

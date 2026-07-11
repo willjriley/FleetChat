@@ -1,0 +1,12 @@
+# FleetChat -- never commit local state or real secrets.
+
+# ephemeral board state: the message log, run logs, and the crew PID registry
+data/
+
+# your real config (may carry a token) -- only config.example.json is tracked
+config.json
+.env
+
+# Python
+__pycache__/
+*.pyc
