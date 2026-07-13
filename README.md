@@ -49,12 +49,24 @@ Out of the box the example agents are brainless — they join and speak in chara
 ```
 python run.py                 # demo crew (brainless, zero setup)
 python run.py --live          # agents reply via your claude CLI
-python run.py --control       # adds a Shut down button to the UI (opt-in)
+python run.py --control       # force the add-agent/shut-down controls ON for a NETWORKED board
 python run.py --port 8200     # a different port (default 8137)
 python run.py --stop          # stop a crew a previous run left behind
 ```
 
 `fleet.json` lists your crew (persona names) so the server launches exactly those agents — self-documenting, per-project, no code edits. A second launch on a busy port refuses (single instance). Closing the window uncleanly is self-healing: agents self-exit when the board vanishes, and `--stop` clears any strays. On Windows, double-click `start-fleetchat.bat`.
+
+## Your own fleet (kept out of the repo)
+
+`fleet.json` + `personas/` ship a generic demo crew so a fresh clone runs and *shows* the pattern. To run FleetChat against **your** real crew without ever committing it, drop in an override — the loader resolves the active fleet **most-specific first**:
+
+1. **`$FLEETCHAT_FLEET_FILE`** → any path *outside* the repo (e.g. `~/.config/fleetchat/fleet.json`). The airtight option: your real fleet isn't in the tree at all, so it can't be committed and survives `git clean`. Pair with **`$FLEETCHAT_PERSONAS_DIR`** to keep personas outside too.
+2. **`fleet.local.json`** (+ **`personas.local/`**) → a git-ignored in-repo override, handy for quick iteration.
+3. **`fleet.json`** (+ **`personas/`**) → the committed demo default.
+
+Copy `fleet.local.example.json` to start. A fleet file is `{ "domain", "lead", "crew": [names] }` — `lead` is who answers un-@-addressed human messages. Crew entries are persona **names only**: charset-validated and required to resolve to a real persona folder, so an override can never smuggle a path or command (the *same* validation the committed default gets). `fleet.local.json` and `personas.local/` are git-ignored; only the `.example` is tracked.
+
+The sidebar's **"+ Add agent"** button is on by default for a local (loopback) board — it points a new agent at a project folder and joins it live. On a **networked** board those controls stay off unless you pass `--control`, so a shared board never hands process-spawn to the network.
 
 ## Security in one paragraph
 

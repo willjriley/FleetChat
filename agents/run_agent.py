@@ -38,11 +38,27 @@ COOLDOWN = 3.0
 FOLDER = os.environ.get("FLEETCHAT_AGENT_DIR") or None  # a dynamically-added agent's project folder
 
 
+def persona_base_dirs():
+    """Persona lookup order (mirrors run.py): external $FLEETCHAT_PERSONAS_DIR, then personas.local/
+    (git-ignored), then the committed personas/. Lets a personal fleet live outside the repo, or
+    mix its own personas with the shipped demo ones."""
+    dirs = []
+    env = os.environ.get("FLEETCHAT_PERSONAS_DIR")
+    if env:
+        dirs.append(Path(env).expanduser())
+    dirs.append(REPO / "personas.local")
+    dirs.append(REPO / "personas")
+    return dirs
+
+
 def load_agent(name):
-    d = REPO / "personas" / name
-    af = d / "agent.json"
-    if af.exists():
-        cfg = json.loads(af.read_text(encoding="utf-8"))
+    d = None
+    for base in persona_base_dirs():
+        if (base / name / "agent.json").is_file():
+            d = base / name
+            break
+    if d is not None:
+        cfg = json.loads((d / "agent.json").read_text(encoding="utf-8"))
         pf = d / "PERSONA.md"
         return cfg, (pf.read_text(encoding="utf-8") if pf.exists() else "")
     # a dynamically-added agent (no persona folder) -- synthesize a generic one
@@ -57,7 +73,13 @@ def load_agent(name):
 
 
 def agent_ids():
-    return [p.name for p in (REPO / "personas").iterdir() if (p / "agent.json").exists()]
+    seen, ids = set(), []
+    for base in persona_base_dirs():
+        if base.is_dir():
+            for p in base.iterdir():
+                if (p / "agent.json").is_file() and p.name not in seen:
+                    seen.add(p.name); ids.append(p.name)
+    return ids
 
 
 def addressed(name, text):
@@ -114,7 +136,7 @@ def respond_demo(cfg, persona, msg):
 def main(name):
     cfg, persona = load_agent(name)
     ids = agent_ids()
-    is_lead = cfg["id"] == "lodestar"
+    is_lead = cfg["id"] == os.environ.get("FLEETCHAT_LEAD", "lodestar")
     board = Board()
     intro = cfg.get("intro", cfg["name"] + " on the board.")
     board.post(cfg["id"], intro + ("  (live)" if LIVE else ""), tags=["join"])

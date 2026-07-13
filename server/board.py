@@ -386,7 +386,13 @@ def main():
     Handler.board = Board()
     Handler.cfg = cfg
     Handler.allowed = allowed_hosts(cfg)
-    Handler.control = os.environ.get("FLEETCHAT_CONTROL") == "1"
+    # Control endpoints (add-agent / kick / shutdown) drive the sidebar's "+ Add agent" button.
+    # Default them ON for a SEALED LOCAL (loopback) board -- it's your own machine, nothing is on
+    # the network, so exposing the add-agent UI is safe and it should always be there. For a
+    # NETWORKED bind they stay OFF unless explicitly enabled, so a shared board never hands
+    # process-spawn to the network by default. FLEETCHAT_CONTROL=1 forces on; =0 forces off.
+    _ctl = os.environ.get("FLEETCHAT_CONTROL")
+    Handler.control = (_ctl == "1") or (_ctl != "0" and cfg["bind"] in LOOPBACK)
     httpd = ThreadingHTTPServer((cfg["bind"], cfg["port"]), Handler)
     scope = "SEALED LOCAL (loopback)" if cfg["bind"] in LOOPBACK else "NETWORKED (token required)"
     print(f"[board] FleetChat board up on http://{cfg['bind']}:{cfg['port']}  --  {scope}")
