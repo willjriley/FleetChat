@@ -1,0 +1,6 @@
+{
+  "_comment": "PERSONAL FLEET template. Copy to fleet.local.json (git-ignored) to override the demo fleet.json with your own crew. To keep it FULLY OUTSIDE the repo, copy it anywhere (e.g. ~/.config/fleetchat/fleet.json) and set FLEETCHAT_FLEET_FILE to that path (and FLEETCHAT_PERSONAS_DIR to a folder of your personas). Resolution order, most-specific first: $FLEETCHAT_FLEET_FILE -> fleet.local.json -> fleet.json. Crew entries are persona NAMES only (charset-validated, never a path or command); each needs a <name>/agent.json under personas.local/ or personas/ (or your $FLEETCHAT_PERSONAS_DIR). 'lead' = the persona id that answers un-@-addressed human messages.",
+  "domain": "your product or team",
+  "lead": "<persona-id>",
+  "crew": ["<persona-id>", "<persona-id>", "<persona-id>"]
+}

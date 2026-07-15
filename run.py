@@ -42,25 +42,87 @@ from fleetchat import Board  # noqa: E402
 PERSONA_ORDER = ["lodestar", "muse", "aegis", "keystone", "lumen"]
 
 
-def load_crew():
-    """The crew to launch: fleet.json's "crew" list if present, else every persona folder.
-    Entries are persona NAMES only -- validated against personas/ with no path tricks and
-    never a command or path -- so a crew-config can never make the server run something
-    arbitrary (see docs/SECURITY.md)."""
-    names = None
-    cfg = REPO / "fleet.json"
-    if cfg.exists():
+def fleet_file():
+    """Resolve the ACTIVE fleet definition, most-specific first:
+      1. $FLEETCHAT_FLEET_FILE  -- an EXTERNAL path (your real fleet, kept OUTSIDE the repo so it
+                                   can never be committed and survives `git clean`). Preferred.
+      2. fleet.local.json       -- a git-ignored in-repo override (quick local iteration).
+      3. fleet.json             -- the committed demo default a fresh clone runs.
+    Returns a Path, or None if nothing is found."""
+    env = os.environ.get("FLEETCHAT_FLEET_FILE")
+    if env:
+        p = Path(env).expanduser()
+        if p.is_file():
+            return p
+    for name in ("fleet.local.json", "fleet.json"):
+        p = REPO / name
+        if p.exists():
+            return p
+    return None
+
+
+def persona_base_dirs():
+    """Where persona folders are looked up, most-specific first: an external dir
+    ($FLEETCHAT_PERSONAS_DIR), then personas.local/ (git-ignored), then the committed personas/.
+    So a personal fleet can live wholly outside the repo, or mix its own personas with the demo ones."""
+    dirs = []
+    env = os.environ.get("FLEETCHAT_PERSONAS_DIR")
+    if env:
+        dirs.append(Path(env).expanduser())
+    dirs.append(REPO / "personas.local")
+    dirs.append(REPO / "personas")
+    return dirs
+
+
+def resolve_persona(name):
+    """The folder for persona `name` -- first base dir with <name>/agent.json, else None.
+    Name is charset-validated here, so an override file can never smuggle a path or command."""
+    if not (isinstance(name, str) and re.fullmatch(r"[a-z0-9_-]+", name)):
+        return None
+    for base in persona_base_dirs():
+        d = base / name
+        if (d / "agent.json").is_file():
+            return d
+    return None
+
+
+def _fleet_field(key, default=None):
+    f = fleet_file()
+    if f:
         try:
-            names = json.loads(cfg.read_text(encoding="utf-8")).get("crew")
+            return json.loads(f.read_text(encoding="utf-8")).get(key, default)
         except Exception:
-            names = None
+            return default
+    return default
+
+
+def load_crew():
+    """The crew to launch: the ACTIVE fleet file's "crew" list if present, else every persona
+    folder found. Entries are persona NAMES only -- validated (name charset + the persona folder
+    must exist), no path tricks, never a command or path -- so a fleet file can never make the
+    server run something arbitrary (docs/SECURITY.md). The SAME validation runs whether the names
+    come from the committed default or your own external/local fleet file."""
+    names = _fleet_field("crew")
     if not isinstance(names, list) or not names:
-        names = PERSONA_ORDER
-    crew = []
-    for n in names:
-        if isinstance(n, str) and re.fullmatch(r"[a-z0-9_-]+", n) and (REPO / "personas" / n / "agent.json").exists():
-            crew.append(n)
-    return crew
+        seen, names = set(), []                     # no crew list -> every persona folder we can see
+        for base in persona_base_dirs():
+            if base.is_dir():
+                for p in sorted(base.iterdir()):
+                    if (p / "agent.json").is_file() and p.name not in seen:
+                        seen.add(p.name); names.append(p.name)
+        if not names:
+            names = PERSONA_ORDER
+    return [n for n in names if resolve_persona(n)]
+
+
+def crew_lead():
+    """Who fields un-@-addressed human messages: the fleet file's "lead", else the first crew
+    member, else the historical default. Always a validated persona NAME, never a path/command."""
+    lead = _fleet_field("lead")
+    if isinstance(lead, str) and resolve_persona(lead):
+        return lead
+    crew = load_crew()
+    return crew[0] if crew else "lodestar"
 
 
 # A short scripted beat so a fresh run SHOWS the pattern, not just five hellos.
@@ -83,16 +145,9 @@ def board_url():
 
 
 def crew_domain():
-    """The domain the demo round-table names. Pulled from fleet.json's "domain" so a
-    customized crew updates the script -- with a friendly fallback so a fresh run never
-    prints a raw <...> placeholder token."""
-    dom = ""
-    cfg = REPO / "fleet.json"
-    if cfg.exists():
-        try:
-            dom = str(json.loads(cfg.read_text(encoding="utf-8")).get("domain", "")).strip()
-        except Exception:
-            dom = ""
+    """The domain the round-table names -- from the ACTIVE fleet file's "domain", with a friendly
+    fallback so a fresh run never prints a raw <...> placeholder token."""
+    dom = str(_fleet_field("domain", "") or "").strip()
     return dom if dom and not dom.startswith("<") else "your product"
 
 
@@ -146,10 +201,10 @@ def main():
         return stop_crew()
 
     keep = "--keep" in sys.argv
-    live = "--live" in sys.argv
-    demo = "--no-demo" not in sys.argv and not live  # in live mode, skip the scripted beat
+    demo = "--demo" in sys.argv  # opt-in: --demo brings up the example crew + scripted round-table (the showcase)
+    live = ("--live" in sys.argv) or not demo  # default empty board -> agents you add reply for real; --demo is scripted unless --live
     if live:
-        os.environ["FLEETCHAT_LIVE"] = "1"  # inherited by the agent subprocesses
+        os.environ["FLEETCHAT_LIVE"] = "1"  # inherited by added agents (and the example crew under --demo --live)
     if "--control" in sys.argv:
         os.environ["FLEETCHAT_CONTROL"] = "1"  # enables the /shutdown control endpoint (opt-in)
     for i, a in enumerate(sys.argv):  # optional --port / --bind for a conflict-free test flight
@@ -174,7 +229,7 @@ def main():
         board_file = REPO / "data" / "board.jsonl"
         if board_file.exists():
             board_file.unlink()
-        print("[run] fresh demo board.")
+        print("[run] fresh board.")
 
     procs, labels = [], []
     print("[run] starting the FleetChat board ...")
@@ -192,9 +247,10 @@ def main():
     # rule requires) hears them -- instead of opening to an already-finished transcript.
     print("\n" + "=" * 62)
     print(f"  FleetChat is live  ->  {url}/")
-    print("  Open it in a browser to watch the crew assemble.")
     if demo:
-        print("  Scripted demo -- run `python run.py --live` to make them think + speak for real.")
+        print("  Example crew assembling -- add --live to make them think + speak for real.")
+    else:
+        print("  Empty board. Click '+ Add agent', point it at a project folder, and it joins live.")
     print("  Stop with Ctrl-C here -- don't just close the window.")
     print("=" * 62 + "\n")
     if os.environ.get("FLEETCHAT_NO_BROWSER") != "1":
@@ -203,11 +259,15 @@ def main():
         except Exception:
             pass
 
-    print("[run] launching the crew ..." + ("  [LIVE: agents reply via claude -- spends tokens]" if live else ""))
-    for name in load_crew():
-        procs.append(subprocess.Popen([PY, str(REPO / "agents" / "run_agent.py"), name]))
-        labels.append(name)
-        time.sleep(0.5)
+    if demo:  # --demo only: bring up the example crew so a first run can SHOW the pattern
+        os.environ["FLEETCHAT_LEAD"] = crew_lead()  # who fields un-@-addressed human messages
+        print("[run] launching the example crew ..." + ("  [LIVE: agents reply via claude -- spends tokens]" if live else ""))
+        for name in load_crew():
+            procs.append(subprocess.Popen([PY, str(REPO / "agents" / "run_agent.py"), name]))
+            labels.append(name)
+            time.sleep(0.5)
+    else:  # DEFAULT: an empty board -- you build your own crew with the '+ Add agent' button (point each at a project folder)
+        print("[run] empty board -- click '+ Add agent' and point it at a project folder to add your first agent.")
 
     # Record labelled PIDs (one "name pid" per line) so `--stop` can clean up even after an
     # unclean window-close, and so a future control can boot a member by name.

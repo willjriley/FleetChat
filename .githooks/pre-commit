@@ -1,0 +1,21 @@
+#!/bin/sh
+# FleetChat pre-commit guard -- refuse to commit local / personal / secret files even if they were
+# force-added (`git add -f`) or a .gitignore rule was misconfigured. Belt-and-suspenders over
+# .gitignore so your real fleet, config, or token can never leak into the (often public) repo.
+#
+# Activate once per clone:   git config core.hooksPath .githooks
+# Bypass deliberately:       git commit --no-verify   (only if you REALLY mean it)
+
+blocked=$(git diff --cached --name-only | grep -E '^(fleet\.local\.json|config\.json|\.env)$|^personas\.local/' || true)
+
+if [ -n "$blocked" ]; then
+    echo "" >&2
+    echo "pre-commit BLOCKED: these files are local/personal and must never be committed:" >&2
+    echo "$blocked" | sed 's/^/  - /' >&2
+    echo "" >&2
+    echo "They hold your real fleet / config / secrets (kept out via .gitignore + this hook)." >&2
+    echo "Unstage them (git restore --staged <file>), or --no-verify if you truly intend to." >&2
+    echo "" >&2
+    exit 1
+fi
+exit 0
