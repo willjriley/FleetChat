@@ -201,10 +201,10 @@ def main():
         return stop_crew()
 
     keep = "--keep" in sys.argv
-    live = "--live" in sys.argv
-    demo = "--no-demo" not in sys.argv and not live  # in live mode, skip the scripted beat
+    demo = "--demo" in sys.argv  # opt-in: --demo brings up the example crew + scripted round-table (the showcase)
+    live = ("--live" in sys.argv) or not demo  # default empty board -> agents you add reply for real; --demo is scripted unless --live
     if live:
-        os.environ["FLEETCHAT_LIVE"] = "1"  # inherited by the agent subprocesses
+        os.environ["FLEETCHAT_LIVE"] = "1"  # inherited by added agents (and the example crew under --demo --live)
     if "--control" in sys.argv:
         os.environ["FLEETCHAT_CONTROL"] = "1"  # enables the /shutdown control endpoint (opt-in)
     for i, a in enumerate(sys.argv):  # optional --port / --bind for a conflict-free test flight
@@ -229,7 +229,7 @@ def main():
         board_file = REPO / "data" / "board.jsonl"
         if board_file.exists():
             board_file.unlink()
-        print("[run] fresh demo board.")
+        print("[run] fresh board.")
 
     procs, labels = [], []
     print("[run] starting the FleetChat board ...")
@@ -247,9 +247,10 @@ def main():
     # rule requires) hears them -- instead of opening to an already-finished transcript.
     print("\n" + "=" * 62)
     print(f"  FleetChat is live  ->  {url}/")
-    print("  Open it in a browser to watch the crew assemble.")
     if demo:
-        print("  Scripted demo -- run `python run.py --live` to make them think + speak for real.")
+        print("  Example crew assembling -- add --live to make them think + speak for real.")
+    else:
+        print("  Empty board. Click '+ Add agent', point it at a project folder, and it joins live.")
     print("  Stop with Ctrl-C here -- don't just close the window.")
     print("=" * 62 + "\n")
     if os.environ.get("FLEETCHAT_NO_BROWSER") != "1":
@@ -258,12 +259,15 @@ def main():
         except Exception:
             pass
 
-    os.environ["FLEETCHAT_LEAD"] = crew_lead()  # who fields un-@-addressed human messages (inherited by agents)
-    print("[run] launching the crew ..." + ("  [LIVE: agents reply via claude -- spends tokens]" if live else ""))
-    for name in load_crew():
-        procs.append(subprocess.Popen([PY, str(REPO / "agents" / "run_agent.py"), name]))
-        labels.append(name)
-        time.sleep(0.5)
+    if demo:  # --demo only: bring up the example crew so a first run can SHOW the pattern
+        os.environ["FLEETCHAT_LEAD"] = crew_lead()  # who fields un-@-addressed human messages
+        print("[run] launching the example crew ..." + ("  [LIVE: agents reply via claude -- spends tokens]" if live else ""))
+        for name in load_crew():
+            procs.append(subprocess.Popen([PY, str(REPO / "agents" / "run_agent.py"), name]))
+            labels.append(name)
+            time.sleep(0.5)
+    else:  # DEFAULT: an empty board -- you build your own crew with the '+ Add agent' button (point each at a project folder)
+        print("[run] empty board -- click '+ Add agent' and point it at a project folder to add your first agent.")
 
     # Record labelled PIDs (one "name pid" per line) so `--stop` can clean up even after an
     # unclean window-close, and so a future control can boot a member by name.

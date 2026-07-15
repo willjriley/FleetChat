@@ -34,6 +34,10 @@
   .agent .ct{margin-left:auto;font-size:11px;color:var(--muted)}
   .agent .kick{margin-left:6px;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0 3px;border-radius:4px}
   .agent .kick:hover{color:#c0392b;background:var(--chip)}
+  /* per-agent memory toggle: dim+grey = -p (stateless, the default); lit = long-term memory on */
+  .agent .book{margin-left:6px;border:0;background:transparent;cursor:pointer;font-size:13px;line-height:1;padding:0 3px;border-radius:4px;opacity:.3;filter:grayscale(1)}
+  .agent .book:hover{background:var(--chip);opacity:.65}
+  .agent .book.on{opacity:1;filter:none}
   .addbtn{margin:12px 4px 0;width:calc(100% - 8px);font:inherit;font-size:12px;color:var(--accent);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:7px;cursor:pointer}
   .addbtn:hover{border-color:var(--accent);background:var(--chip)}
   .feed{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -73,6 +77,13 @@
   .mention .mi.sel{background:var(--chip)}
   .mention .mi .av{width:20px;height:20px;font-size:10px}
   .mention .mi .mrole{color:var(--muted);font-size:11px;margin-left:auto;padding-left:10px}
+  .mention .mi.allrow .mrole{color:var(--accent);font-weight:600}
+  /* target chips: who this message is addressed to (parsed live from the @mentions) */
+  .tags{display:none;flex-wrap:wrap;gap:6px;padding:8px 18px 0}
+  .tags .tag{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;background:var(--chip);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:3px 5px 3px 10px}
+  .tags .tag.all{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .tags .tag .tagx{font:inherit;font-size:15px;line-height:1;border:0;background:transparent;color:inherit;cursor:pointer;opacity:.65;padding:0 4px}
+  .tags .tag .tagx:hover{opacity:1}
   input,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
   #who{width:120px}
   #text{flex:1;resize:none;height:40px}
@@ -96,7 +107,8 @@
     <button id="addagent" class="addbtn" style="display:none">+ Add agent</button>
   </aside>
   <section class="feed">
-    <div class="msgs" id="msgs"><div class="empty">Waiting for the crew to join…</div></div>
+    <div class="msgs" id="msgs"><div class="empty">No agents yet — click <b>+ Add agent</b> in the sidebar and point it at a project folder to add your first one.</div></div>
+    <div id="tags" class="tags" title="Who this message goes to — type @ to add, or click × to remove"></div>
     <form id="form">
       <input id="who" placeholder="your name" autocomplete="off">
       <textarea id="text" placeholder="Message the crew…   markdown, `code`, [links](https://…), or /poll to start a poll"></textarea>
@@ -107,7 +119,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {};
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {};
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -258,6 +270,14 @@
       var ct=document.createElement("span"); ct.className="ct"; ct.textContent=counts[name];
       row.appendChild(nm); row.appendChild(ct);
       if(controlOn && agentNames[name]){
+        var on=!!memoryState[name];
+        var bk=document.createElement("button"); bk.className="book"+(on?" on":""); bk.textContent="📖";
+        bk.title=on ? (name+": long-term memory ON — carries its plan + progress across turns. Click for stateless -p.")
+                    : (name+": -p (stateless, the default) — fresh brain each message, no memory. Click for long-term memory: best when it's building something over several turns.");
+        (function(n){ bk.addEventListener("click", function(){ toggleMemory(n); }); })(name);
+        row.appendChild(bk);
+      }
+      if(controlOn && agentNames[name]){
         var x=document.createElement("button"); x.className="kick"; x.textContent="×"; x.title="Remove "+name;
         x.addEventListener("click", function(){ kickAgent(name); });
         row.appendChild(x);
@@ -270,6 +290,32 @@
     fetch("/control/kick",{method:"POST",headers:headers({"Content-Type":"application/json"}),
       body:JSON.stringify({agent:name})})
       .then(function(r){ if(r.status===401){askToken();} else { delete agentNames[name]; poll(); } });
+  }
+  function loadMemory(){
+    // fetch the current per-agent memory flags so the book icons render lit/dim correctly
+    if(!controlOn) return;
+    fetch("/control/memory",{headers:headers()})
+      .then(function(r){ return r.status===200 ? r.json() : null; })
+      .then(function(j){ if(j && j.memory){ memoryState=j.memory; renderAgents(); } })
+      .catch(function(){});
+  }
+  function toggleMemory(name){
+    // flip -p <-> long-term memory for one agent; the server writes it to the git-ignored fleet
+    // file, and each agent re-reads that fresh on its next message (no restart). Optimistic UI.
+    var on=!memoryState[name];
+    memoryState[name]=on; renderAgents();
+    fetch("/control/memory",{method:"POST",headers:headers({"Content-Type":"application/json"}),
+      body:JSON.stringify({agent:name, on:on})})
+      .then(function(r){
+        if(r.status===401){ askToken(); throw null; }
+        return r.json().then(function(j){ return {s:r.status, j:j}; });
+      })
+      .then(function(res){
+        if(res.s>=400){ throw res.j; }
+        if(res.j && res.j.memory){ memoryState=res.j.memory; renderAgents(); }
+      })
+      .catch(function(e){ memoryState[name]=!on; renderAgents();   // revert on failure
+        if(e && e.error){ alert("Couldn't toggle memory: "+e.error); } });
   }
   function addAgent(){
     // native folder picker first (a real OS dialog on this machine); typed-path fallback
@@ -346,7 +392,7 @@
     $("#send").disabled=true;
     fetch("/post", {method:"POST", headers:headers({"Content-Type":"application/json"}),
       body:JSON.stringify({sender:sender, text:text, tags:[]})})
-      .then(function(r){ if(r.status===401){ askToken(); } else { $("#text").value=""; poll(); } })
+      .then(function(r){ if(r.status===401){ askToken(); } else { $("#text").value=""; renderChips(); poll(); } })
       .finally(function(){ $("#send").disabled=false; });
   });
   // ---------- @-mention autocomplete: type @ to pick an agent from the crew ----------
@@ -354,7 +400,8 @@
   function mOpen(){ return !!mBox; }
   function mNames(){
     var set={}; Object.keys(agentNames).forEach(function(n){set[n]=1;}); Object.keys(counts).forEach(function(n){set[n]=1;});
-    return Object.keys(set).sort();
+    delete set["all"];
+    return ["all"].concat(Object.keys(set).sort());  // @all first -> explicit broadcast to the whole crew
   }
   function mClose(){ if(mBox){ mBox.remove(); mBox=null; } mItems=[]; mSel=0; }
   function mToken(){   // the @word ending at the caret, if the @ starts a word
@@ -370,10 +417,11 @@
     if(!mBox){ mBox=document.createElement("div"); mBox.className="mention"; $("#form").appendChild(mBox); }
     mBox.innerHTML="";
     matches.forEach(function(n,idx){
-      var mi=document.createElement("div"); mi.className="mi"+(idx===mSel?" sel":"");
+      var mi=document.createElement("div"); mi.className="mi"+(idx===mSel?" sel":"")+(n==="all"?" allrow":"");
       mi.appendChild(av(n));
       var s=document.createElement("span"); s.textContent="@"+n; mi.appendChild(s);   // textContent -> XSS-safe
-      if(agentNames[n]){ var r=document.createElement("span"); r.className="mrole"; r.textContent="agent"; mi.appendChild(r); }
+      if(n==="all"){ var ra=document.createElement("span"); ra.className="mrole"; ra.textContent="everyone"; mi.appendChild(ra); }
+      else if(agentNames[n]){ var r=document.createElement("span"); r.className="mrole"; r.textContent="agent"; mi.appendChild(r); }
       mi.addEventListener("mousedown", function(e){ e.preventDefault(); mChoose(idx); });  // mousedown: fires before blur
       mBox.appendChild(mi);
     });
@@ -385,9 +433,33 @@
     var t=mToken(); if(!t || idx<0 || idx>=mItems.length){ mClose(); return; }
     var ta=$("#text"), val=ta.value, pos=ta.selectionStart, ins="@"+mItems[idx]+" ";
     ta.value=val.slice(0,t.start)+ins+val.slice(pos);
-    var np=t.start+ins.length; ta.setSelectionRange(np,np); mClose(); ta.focus();
+    var np=t.start+ins.length; ta.setSelectionRange(np,np); mClose(); ta.focus(); renderChips();
   }
-  $("#text").addEventListener("input", function(){ var t=mToken(); if(t) mRender(t.q); else mClose(); });
+  // ---------- target chips: show live who this message is addressed to (parsed from the @mentions) ----------
+  function parseTargets(){
+    var re=/(^|[\s(])@(all|[a-z0-9_-]+)/gi, text=$("#text").value, seen={}, out=[], m;
+    while((m=re.exec(text))){ var n=m[2].toLowerCase(); if(!seen[n]){ seen[n]=1; out.push(n); } }
+    return out;
+  }
+  function renderChips(){
+    var box=$("#tags"), out=parseTargets();
+    box.innerHTML="";
+    if(!out.length){ box.style.display="none"; return; }
+    box.style.display="flex";
+    out.forEach(function(n){
+      var chip=document.createElement("span"); chip.className="tag"+(n==="all"?" all":"");
+      chip.appendChild(document.createTextNode(n==="all"?"@all · everyone":"@"+n));   // textContent path -> XSS-safe
+      var x=document.createElement("button"); x.type="button"; x.className="tagx"; x.textContent="×"; x.title="remove";
+      x.addEventListener("click", function(){ removeMention(n); });
+      chip.appendChild(x); box.appendChild(chip);
+    });
+  }
+  function removeMention(n){
+    var ta=$("#text"), esc=n.replace(/[.*+?^${}()|[\]\\-]/g,"\\$&");
+    ta.value=ta.value.replace(new RegExp("(^|[\\s(])@"+esc+"\\b[ ]?","gi"),"$1").replace(/[ ]{2,}/g," ").replace(/^ +/,"");
+    renderChips(); ta.focus();
+  }
+  $("#text").addEventListener("input", function(){ renderChips(); var t=mToken(); if(t) mRender(t.q); else mClose(); });
   $("#text").addEventListener("keydown", function(e){   // registered BEFORE the send-handler -> intercepts Enter when the list is open
     if(!mBox) return;
     if(e.key==="ArrowDown"){ e.preventDefault(); mSel=(mSel+1)%mItems.length; mRender((mToken()||{q:""}).q); }
@@ -405,7 +477,7 @@
   fetch("/health").then(function(r){return r.json();}).then(function(h){
     scope.textContent=h.version||"";
     controlOn = !!h.control;
-    if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } }
+    if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } loadMemory(); }
   }).catch(function(){});
   function shutdownServer(){
     if(!confirm("Shut down the FleetChat server and stop the whole crew?")) return;

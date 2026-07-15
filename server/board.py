@@ -97,6 +97,44 @@ def kill_pid(pid):
 
 
 # --------------------------------------------------------------------------- #
+# Per-agent memory toggle -- persisted in data/settings.json (git-ignored).     #
+# Self-contained: NO coupling to any fleet-config file, so the default          #
+# empty-board flow never creates config files. run_agent.py reads it fresh      #
+# each cycle, so a flip here takes effect on the agent's next message.          #
+# --------------------------------------------------------------------------- #
+SETTINGS_FILE = DATA / "settings.json"
+
+
+def _settings_read():
+    if SETTINGS_FILE.is_file():
+        try:
+            d = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def memory_read():
+    """The per-agent memory map {name: bool} from data/settings.json."""
+    mem = _settings_read().get("memory")
+    return {k: bool(v) for k, v in mem.items()} if isinstance(mem, dict) else {}
+
+
+def memory_write(agent, on):
+    """Flip one agent's memory flag in data/settings.json, preserving other keys."""
+    data = _settings_read()
+    mem = data.get("memory")
+    if not isinstance(mem, dict):
+        mem = {}
+    mem[agent] = bool(on)
+    data["memory"] = mem
+    DATA.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {k: bool(v) for k, v in mem.items()}
+
+
+# --------------------------------------------------------------------------- #
 # Config + the security coupling                                              #
 # --------------------------------------------------------------------------- #
 def load_config():
@@ -261,6 +299,12 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     since = 0
             return self._send_json({"messages": self.board.since(since)})
+        if route.path == "/control/memory":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"memory": memory_read()})
         return self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -295,6 +339,20 @@ class Handler(BaseHTTPRequestHandler):
             kill_pid(crew.pop(name))
             write_crew(crew)
             return self._send_json({"ok": True, "kicked": name})
+        if route.path == "/control/memory":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            name = data.get("agent", "")
+            if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
+                return self._send_json({"error": "bad agent name"}, 400)
+            try:
+                mem = memory_write(name, bool(data.get("on")))
+            except Exception as e:
+                return self._send_json({"error": "could not write settings: %s" % e}, 500)
+            return self._send_json({"ok": True, "agent": name, "on": bool(data.get("on")), "memory": mem})
         if route.path == "/control/add":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -310,14 +368,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "bad folder path"}, 400)
             if not p.is_dir():
                 return self._send_json({"error": "that folder does not exist"}, 400)
-            # Crew-root fence: a folder-agent is told it may read its folder's files, so an
-            # added agent must not be aimed at a secrets/creds dir. Restrict to a crew root
-            # (default = this repo; widen with FLEETCHAT_CREW_ROOT; FLEETCHAT_CREW_ANY_DIR=1 opts out).
-            if os.environ.get("FLEETCHAT_CREW_ANY_DIR") != "1":
+            # Crew-root fence -- ONLY on a NETWORKED board. A folder-agent may read its folder's
+            # files, so on a shared/networked board a remote actor must not aim one at a secrets dir.
+            # On a LOCAL (loopback) board it's the user's own machine adding their own projects, so
+            # ANY folder is fine -- no fence. Networked default = this repo; widen with
+            # FLEETCHAT_CREW_ROOT; FLEETCHAT_CREW_ANY_DIR=1 opts out even when networked.
+            loopback = self.cfg.get("bind", "127.0.0.1") in LOOPBACK
+            if not loopback and os.environ.get("FLEETCHAT_CREW_ANY_DIR") != "1":
                 root_env = os.environ.get("FLEETCHAT_CREW_ROOT")
                 root = Path(root_env).expanduser().resolve() if root_env else REPO
                 if not (p == root or root in p.parents):
-                    return self._send_json({"error": "folder must be inside the crew root (%s)" % root}, 403)
+                    return self._send_json({"error": "folder must be inside the crew root (%s); set FLEETCHAT_CREW_ROOT to widen" % root}, 403)
             name = re.sub(r"[^a-z0-9_-]", "", p.name.lower())
             if not name:
                 return self._send_json({"error": "cannot derive an agent name from that folder"}, 400)
