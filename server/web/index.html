@@ -119,7 +119,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {};
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {};
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -267,6 +267,7 @@
       var row=document.createElement("div"); row.className="agent";
       row.appendChild(av(name));
       var nm=document.createElement("span"); nm.className="nm"; nm.textContent=name;
+      if(rosterMap[name]){ row.title=rosterMap[name].role||""; if(rosterMap[name].lead){ nm.textContent="★ "+name; } }
       var ct=document.createElement("span"); ct.className="ct"; ct.textContent=counts[name];
       row.appendChild(nm); row.appendChild(ct);
       if(controlOn && agentNames[name]){
@@ -290,6 +291,12 @@
     fetch("/control/kick",{method:"POST",headers:headers({"Content-Type":"application/json"}),
       body:JSON.stringify({agent:name})})
       .then(function(r){ if(r.status===401){askToken();} else { delete agentNames[name]; poll(); } });
+  }
+  function loadRoster(){
+    // the who's-who: each agent's lane, shown as a hover title + a star on the lead
+    fetch("/roster",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
+      .then(function(j){ if(j&&j.roster){ rosterMap={}; j.roster.forEach(function(a){ rosterMap[a.id]=a; }); renderAgents(); } })
+      .catch(function(){});
   }
   function loadMemory(){
     // fetch the current per-agent memory flags so the book icons render lit/dim correctly
@@ -478,6 +485,7 @@
     scope.textContent=h.version||"";
     controlOn = !!h.control;
     if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } loadMemory(); }
+    loadRoster();
   }).catch(function(){});
   function shutdownServer(){
     if(!confirm("Shut down the FleetChat server and stop the whole crew?")) return;

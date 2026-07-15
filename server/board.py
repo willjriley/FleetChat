@@ -80,6 +80,45 @@ def read_crew():
     return crew
 
 
+def read_roster():
+    """The configured crew + their lanes, for the who's-who UI. Resolves the fleet file
+    (FLEETCHAT_FLEET_FILE > fleet.local.json > fleet.json) and each member's agent.json
+    (personas.local/ preferred, then personas/). Read-only; safe on a networked board."""
+    ff = os.environ.get("FLEETCHAT_FLEET_FILE")
+    fleet = {}
+    for p in ([Path(ff).expanduser()] if ff else []) + [REPO / "fleet.local.json", REPO / "fleet.json"]:
+        try:
+            if p.is_file():
+                fleet = json.loads(p.read_text(encoding="utf-8"))
+                break
+        except Exception:
+            pass
+    lead = fleet.get("lead", "")
+    crew_ids = fleet.get("crew", []) if isinstance(fleet.get("crew"), list) else []
+    pbases = []
+    pd = os.environ.get("FLEETCHAT_PERSONAS_DIR")
+    if pd:
+        pbases.append(Path(pd).expanduser())
+    pbases += [REPO / "personas.local", REPO / "personas"]
+    roster = []
+    for cid in crew_ids:
+        cid = str(cid)
+        if not re.fullmatch(r"[a-z0-9_-]+", cid):
+            continue
+        name, role = cid.capitalize(), ""
+        for base in pbases:
+            aj = base / cid / "agent.json"
+            if aj.is_file():
+                try:
+                    d = json.loads(aj.read_text(encoding="utf-8"))
+                    name, role = d.get("name", name), d.get("role", "")
+                except Exception:
+                    pass
+                break
+        roster.append({"id": cid, "name": name, "role": role, "lead": cid == lead})
+    return roster
+
+
 def write_crew(crew):
     DATA.mkdir(parents=True, exist_ok=True)
     (DATA / "run.pids").write_text("\n".join("%s %d" % (n, p) for n, p in crew.items()), encoding="utf-8")
@@ -299,6 +338,8 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     since = 0
             return self._send_json({"messages": self.board.since(since)})
+        if route.path == "/roster":
+            return self._send_json({"roster": read_roster()})
         if route.path == "/control/memory":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
