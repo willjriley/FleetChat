@@ -51,6 +51,18 @@ class Board:
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode("utf-8"))
 
+    def set_typing(self, agent, on):
+        """Best-effort 'I'm composing' ping so the UI shows an animated … next to the name.
+        Never let a typing ping break the reply path -- all errors are swallowed."""
+        try:
+            body = json.dumps({"agent": agent, "on": bool(on)}).encode("utf-8")
+            req = urllib.request.Request(
+                self.url + "/typing", data=body,
+                headers=self._headers({"Content-Type": "application/json"}))
+            urllib.request.urlopen(req, timeout=5).read()
+        except Exception:
+            pass
+
     def messages(self, since=0):
         """Everything newer than message id `since` (0 = from the start)."""
         req = urllib.request.Request(

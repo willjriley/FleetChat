@@ -26,12 +26,20 @@
   header .ctl{margin-left:12px;font:inherit;font-size:12px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:7px;padding:3px 11px;cursor:pointer}
   header .ctl:hover{border-color:#c0392b;color:#c0392b}
   main{flex:1;display:flex;min-height:0}
-  .side{width:210px;border-right:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:12px}
+  .side{width:250px;border-right:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:12px}
   .side h2{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:4px 4px 10px}
   .agent{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px}
   .agent .av{width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:11px;font-weight:700}
   .agent .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .agent .ct{margin-left:auto;font-size:11px;color:var(--muted)}
+  /* animated … next to a name while that agent is composing a reply (mid claude call) */
+  .agent .nmwrap{flex:1;min-width:0;display:flex;align-items:center;gap:5px;overflow:hidden}
+  .agent .dots{display:none;color:var(--accent);font-weight:700;letter-spacing:2px;line-height:1;flex:none}
+  .agent .dots.on{display:inline-block}
+  .agent .dots i{font-style:normal;opacity:.2;animation:tdot 1.15s infinite}
+  .agent .dots i:nth-child(2){animation-delay:.19s}
+  .agent .dots i:nth-child(3){animation-delay:.38s}
+  @keyframes tdot{0%,70%,100%{opacity:.2}35%{opacity:1}}
   .agent .kick{margin-left:6px;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0 3px;border-radius:4px}
   .agent .kick:hover{color:#c0392b;background:var(--chip)}
   /* per-agent memory toggle: dim+grey = -p (stateless, the default); lit = long-term memory on */
@@ -119,7 +127,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {};
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {};
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -263,13 +271,14 @@
 
   function renderAgents(){
     agents.innerHTML="";
-    Object.keys(counts).sort().forEach(function(name){
+    Object.keys(counts).sort(function(a,b){return a.localeCompare(b,undefined,{sensitivity:"base"});}).forEach(function(name){
       var row=document.createElement("div"); row.className="agent";
       row.appendChild(av(name));
       var nm=document.createElement("span"); nm.className="nm"; nm.textContent=name;
       if(rosterMap[name]){ row.title=rosterMap[name].role||""; if(rosterMap[name].lead){ nm.textContent="★ "+name; } }
-      var ct=document.createElement("span"); ct.className="ct"; ct.textContent=counts[name];
-      row.appendChild(nm); row.appendChild(ct);
+      var dots=document.createElement("span"); dots.className="dots"+(typingSet[name]?" on":""); dots.innerHTML="<i>&#8226;</i><i>&#8226;</i><i>&#8226;</i>";
+      var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(dots);
+      row.appendChild(nmwrap);
       if(controlOn && agentNames[name]){
         var on=!!memoryState[name];
         var bk=document.createElement("button"); bk.className="book"+(on?" on":""); bk.textContent="📖";
@@ -296,6 +305,15 @@
     // the who's-who: each agent's lane, shown as a hover title + a star on the lead
     fetch("/roster",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
       .then(function(j){ if(j&&j.roster){ rosterMap={}; j.roster.forEach(function(a){ rosterMap[a.id]=a; }); renderAgents(); } })
+      .catch(function(){});
+  }
+  function loadTyping(){
+    // who is mid-thought right now -> the animated … next to the name. Re-render only on a
+    // change, so a running animation isn't reset by every poll.
+    fetch("/typing",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
+      .then(function(j){ if(!j) return; var s={}; (j.typing||[]).forEach(function(n){ s[n]=1; });
+        var changed=Object.keys(s).sort().join(",")!==Object.keys(typingSet).sort().join(",");
+        typingSet=s; if(changed) renderAgents(); })
       .catch(function(){});
   }
   function loadMemory(){
@@ -381,8 +399,10 @@
       dot.classList.add("ok"); return r.json();
     }).then(function(data){
       if(!data) return;
-      (data.messages||[]).forEach(function(m){ add(m); if(m.id>lastId) lastId=m.id; });
-      renderAgents(); updateAllPolls(); speakReady = true;
+      var incoming=data.messages||[];
+      incoming.forEach(function(m){ add(m); if(m.id>lastId) lastId=m.id; });
+      if(incoming.length) renderAgents();   // rebuild only on change, so the typing … animation isn't reset every poll
+      updateAllPolls(); speakReady = true;
     }).catch(function(){ dot.classList.remove("ok"); });
   }
 
@@ -500,7 +520,8 @@
     var sb=$("#shutdown"); if(sb) sb.style.display="none";
   }
   var pollTimer=setInterval(poll, 2000);
-  poll();
+  var typeTimer=setInterval(loadTyping, 1200);
+  poll(); loadTyping();
 })();
 </script>
 </body>
