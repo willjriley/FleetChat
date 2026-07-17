@@ -81,28 +81,17 @@ def read_crew():
 
 
 def read_roster():
-    """The configured crew + their lanes, for the who's-who UI. Resolves the fleet file
-    (FLEETCHAT_FLEET_FILE > fleet.local.json > fleet.json) and each member's agent.json
-    (personas.local/ preferred, then personas/). Read-only; safe on a networked board."""
-    ff = os.environ.get("FLEETCHAT_FLEET_FILE")
-    fleet = {}
-    for p in ([Path(ff).expanduser()] if ff else []) + [REPO / "fleet.local.json", REPO / "fleet.json"]:
-        try:
-            if p.is_file():
-                fleet = json.loads(p.read_text(encoding="utf-8"))
-                break
-        except Exception:
-            pass
-    lead = fleet.get("lead", "")
-    crew_ids = fleet.get("crew", []) if isinstance(fleet.get("crew"), list) else []
+    """The configured lineup for the sidebar: the PERSISTED roster.json entries, each resolved to
+    {id, name, role} via its persona (personas.local/ then personas/). ALL agents equal -- no forced
+    lead/star; add a leader only if you want one. Read-only; safe on a networked board."""
     pbases = []
     pd = os.environ.get("FLEETCHAT_PERSONAS_DIR")
     if pd:
         pbases.append(Path(pd).expanduser())
     pbases += [REPO / "personas.local", REPO / "personas"]
     roster = []
-    for cid in crew_ids:
-        cid = str(cid)
+    for entry in read_roster_list():                    # the durable data/roster.json lineup
+        cid = str(entry.get("name", ""))
         if not re.fullmatch(r"[a-z0-9_-]+", cid):
             continue
         name, role = cid.capitalize(), ""
@@ -115,13 +104,54 @@ def read_roster():
                 except Exception:
                     pass
                 break
-        roster.append({"id": cid, "name": name, "role": role, "lead": cid == lead})
+        roster.append({"id": cid, "name": name, "role": role})
     return roster
 
 
 def write_crew(crew):
     DATA.mkdir(parents=True, exist_ok=True)
     (DATA / "run.pids").write_text("\n".join("%s %d" % (n, p) for n, p in crew.items()), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Persisted lineup (data/roster.json) -- the configured crew a RESTART re-launches. #
+# run.pids is ephemeral (live PIDs); THIS is the durable "who's on the team" list.   #
+# Git-ignored (lives under data/), so it survives open/close but never enters the    #
+# shared repo. + Add agent appends here; the x button removes; run.py reads it on boot.#
+# --------------------------------------------------------------------------- #
+ROSTER_FILE = DATA / "roster.json"
+
+
+def read_roster_list():
+    """The persisted lineup: [{"name": str, "dir"?: str}, ...]. Corruption never crashes the board."""
+    if ROSTER_FILE.is_file():
+        try:
+            d = json.loads(ROSTER_FILE.read_text(encoding="utf-8"))
+            return [x for x in d if isinstance(x, dict) and x.get("name")] if isinstance(d, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def write_roster_list(items):
+    DATA.mkdir(parents=True, exist_ok=True)
+    ROSTER_FILE.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def roster_add(name, folder=None):
+    """Add an agent to the persisted lineup (idempotent by name), so a restart re-launches it."""
+    items = read_roster_list()
+    if not any(i.get("name") == name for i in items):
+        entry = {"name": name}
+        if folder:
+            entry["dir"] = str(folder)
+        items.append(entry)
+        write_roster_list(items)
+
+
+def roster_remove(name):
+    """Drop an agent from the persisted lineup so the next restart will NOT bring it back."""
+    write_roster_list([i for i in read_roster_list() if i.get("name") != name])
 
 
 def kill_pid(pid):
@@ -171,6 +201,20 @@ def memory_write(agent, on):
     DATA.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return {k: bool(v) for k, v in mem.items()}
+
+
+def tts_muted_read():
+    """Board-wide TTS mute flag (settings.json). A server-side speaker reads this to decide whether
+    to voice agent replies, so the UI's mute button gates the actual (server) speech, not the browser."""
+    return bool(_settings_read().get("tts_muted"))
+
+
+def tts_muted_write(muted):
+    data = _settings_read()
+    data["tts_muted"] = bool(muted)
+    DATA.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return bool(muted)
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +271,7 @@ class Board:
         self._messages = []
         self._next_id = 1
         self._typing = {}          # agent id -> last "composing" ping ts (drives the UI's animated …)
+        self._speaker_seen = 0     # last heartbeat from a server-side TTS speaker -> browser-TTS auto-detect
         DATA.mkdir(parents=True, exist_ok=True)
         if BOARD_FILE.exists():
             for line in BOARD_FILE.read_text(encoding="utf-8").splitlines():
@@ -281,6 +326,26 @@ class Board:
         now = time.time()
         with self._lock:
             return sorted(a for a, ts in self._typing.items() if now - ts <= ttl)
+
+    def clear(self):
+        """Wipe the board history -- in-memory + the JSONL. _next_id keeps climbing so message ids
+        never repeat, and clients tracking a last-id still receive everything posted after the clear."""
+        with self._lock:
+            self._messages = []
+            try:
+                BOARD_FILE.write_text("", encoding="utf-8")
+            except Exception:
+                pass
+
+    def speaker_ping(self):
+        """A server-side TTS speaker announcing it's alive -> the UI drops its browser fallback so
+        the two don't double up."""
+        with self._lock:
+            self._speaker_seen = time.time()
+
+    def speaker_active(self, ttl=30):
+        with self._lock:
+            return (time.time() - self._speaker_seen) <= ttl
 
 
 # --------------------------------------------------------------------------- #
@@ -374,6 +439,8 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send_json({"error": "unauthorized"}, 401)
             return self._send_json({"memory": memory_read()})
+        if route.path == "/control/tts":
+            return self._send_json({"muted": tts_muted_read(), "server": self.board.speaker_active()})
         return self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -403,11 +470,21 @@ class Handler(BaseHTTPRequestHandler):
             if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
                 return self._send_json({"error": "bad agent name"}, 400)
             crew = read_crew()
-            if name == "board" or name not in crew:
+            in_roster = any(i.get("name") == name for i in read_roster_list())
+            if name == "board" or (name not in crew and not in_roster):
                 return self._send_json({"error": "no such agent"}, 404)
-            kill_pid(crew.pop(name))
-            write_crew(crew)
+            if name in crew:
+                kill_pid(crew.pop(name))
+                write_crew(crew)
+            roster_remove(name)   # drop from the persisted lineup so a restart won't bring it back
             return self._send_json({"ok": True, "kicked": name})
+        if route.path == "/control/clear":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            self.board.clear()
+            return self._send_json({"ok": True, "cleared": True})
         if route.path == "/control/memory":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -422,6 +499,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"error": "could not write settings: %s" % e}, 500)
             return self._send_json({"ok": True, "agent": name, "on": bool(data.get("on")), "memory": mem})
+        if route.path == "/control/tts":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            if data.get("heartbeat"):
+                self.board.speaker_ping()          # a server speaker announcing it's alive
+                return self._send_json({"ok": True, "server": True})
+            return self._send_json({"ok": True, "muted": tts_muted_write(bool(data.get("muted")))})
         if route.path == "/control/add":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -462,6 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                                      name, "--dir", str(p)], env=env)
             crew[name] = proc.pid
             write_crew(crew)
+            roster_add(name, str(p))   # persist to the lineup so a restart re-launches it
             return self._send_json({"ok": True, "added": name})
         if route.path == "/control/pick":
             if not self.control:

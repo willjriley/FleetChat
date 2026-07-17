@@ -119,7 +119,7 @@
     <div id="tags" class="tags" title="Who this message goes to — type @ to add, or click × to remove"></div>
     <form id="form">
       <input id="who" placeholder="your name" autocomplete="off">
-      <textarea id="text" placeholder="Message the crew…   markdown, `code`, [links](https://…), or /poll to start a poll"></textarea>
+      <textarea id="text" placeholder="Message the crew…   markdown &amp; `code` render · type / for commands"></textarea>
       <button class="send" id="send" type="submit">Send</button>
     </form>
   </section>
@@ -127,7 +127,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {};
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false;
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -142,10 +142,30 @@
   var speakReady = false, voices = [];
   function loadVoices(){ try{ voices=(window.speechSynthesis && speechSynthesis.getVoices())||[]; }catch(e){} }
   if(window.speechSynthesis){ loadVoices(); try{ speechSynthesis.onvoiceschanged=loadVoices; }catch(e){} }
+  // OPTIONAL, EXAMPLE per-agent voice assignment. Each name maps to an ordered list of preferred
+  // browser voices (case-insensitive substring match against installed voices); the first present
+  // one wins, else a stable name-hash pick, so it always works. These are BROWSER voices (Web Speech
+  // API) -- a self-contained fallback. If you run a server-side TTS speaker instead, the page detects
+  // it (see loadTtsState) and the browser voices stand down automatically. Edit for your own agents.
+  var VOICE_MAP = {
+    lodestar: ["david","guy","us english"],
+    aegis:    ["mark","eric","christopher"],
+    muse:     ["zira","aria","jenny","female"],
+    keystone: ["george","ryan","uk english male"],
+    lumen:    ["roger","steffan","daniel"]
+  };
   function voiceFor(name){
     if(!voices.length) loadVoices();
     if(!voices.length) return null;
-    var h=0; for(var i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))%voices.length;
+    var prefs=VOICE_MAP[(name||"").toLowerCase()];
+    if(prefs){
+      for(var p=0;p<prefs.length;p++){
+        for(var i=0;i<voices.length;i++){
+          if((voices[i].name||"").toLowerCase().indexOf(prefs[p])>=0) return voices[i];
+        }
+      }
+    }
+    var h=0; for(var j=0;j<name.length;j++) h=(h*31+name.charCodeAt(j))%voices.length;
     return voices[h];
   }
   function cleanForSpeech(t){
@@ -154,7 +174,7 @@
       .replace(/[*#_>|]/g,"").replace(/\s+/g," ").trim().slice(0,400);
   }
   function speak(sender, text){
-    if(muted || !speakReady || !window.speechSynthesis) return;
+    if(muted || serverTts || !speakReady || !window.speechSynthesis) return;   // serverTts -> a server speaker voices it; don't double up
     var say=cleanForSpeech(text); if(!say) return;
     var u=new SpeechSynthesisUtterance(say); var v=voiceFor(sender); if(v) u.voice=v; u.rate=1.05;
     try{ speechSynthesis.speak(u); }catch(e){}
@@ -163,6 +183,8 @@
     muted=m; localStorage.setItem("fleetchat_muted", m?"1":"0");
     var b=$("#mute"); if(b) b.textContent = m ? "🔇" : "🔊";
     if(m && window.speechSynthesis){ try{ speechSynthesis.cancel(); }catch(e){} }
+    // also gate any server-side TTS speaker -> the mute button controls the real voices, not just the browser
+    fetch("/control/tts",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({muted:m})}).catch(function(){});
   }
   (function(){ var b=$("#mute"); if(!b) return; if(!window.speechSynthesis){ b.style.display="none"; return; } b.textContent = muted ? "🔇" : "🔊"; b.addEventListener("click", function(){ setMuted(!muted); }); })();
 
@@ -270,26 +292,27 @@
   }
 
   function renderAgents(){
+    // The sidebar renders the CONFIGURED ROSTER (data/roster.json via /roster), not "who posted".
+    // Every agent is equal: same row, a memory toggle + a remove (x) for all, no forced lead-star.
     agents.innerHTML="";
-    Object.keys(counts).sort(function(a,b){return a.localeCompare(b,undefined,{sensitivity:"base"});}).forEach(function(name){
+    rosterList.forEach(function(a){
+      var name=a.id;
       var row=document.createElement("div"); row.className="agent";
       row.appendChild(av(name));
-      var nm=document.createElement("span"); nm.className="nm"; nm.textContent=name;
-      if(rosterMap[name]){ row.title=rosterMap[name].role||""; if(rosterMap[name].lead){ nm.textContent="★ "+name; } }
+      var nm=document.createElement("span"); nm.className="nm"; nm.textContent=a.name||name;
+      row.title=a.role||"";
       var dots=document.createElement("span"); dots.className="dots"+(typingSet[name]?" on":""); dots.innerHTML="<i>&#8226;</i><i>&#8226;</i><i>&#8226;</i>";
       var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(dots);
       row.appendChild(nmwrap);
-      if(controlOn && agentNames[name]){
+      if(controlOn){
         var on=!!memoryState[name];
         var bk=document.createElement("button"); bk.className="book"+(on?" on":""); bk.textContent="📖";
         bk.title=on ? (name+": long-term memory ON — carries its plan + progress across turns. Click for stateless -p.")
                     : (name+": -p (stateless, the default) — fresh brain each message, no memory. Click for long-term memory: best when it's building something over several turns.");
         (function(n){ bk.addEventListener("click", function(){ toggleMemory(n); }); })(name);
         row.appendChild(bk);
-      }
-      if(controlOn && agentNames[name]){
         var x=document.createElement("button"); x.className="kick"; x.textContent="×"; x.title="Remove "+name;
-        x.addEventListener("click", function(){ kickAgent(name); });
+        (function(n){ x.addEventListener("click", function(){ kickAgent(n); }); })(name);
         row.appendChild(x);
       }
       agents.appendChild(row);
@@ -302,9 +325,9 @@
       .then(function(r){ if(r.status===401){askToken();} else { delete agentNames[name]; poll(); } });
   }
   function loadRoster(){
-    // the who's-who: each agent's lane, shown as a hover title + a star on the lead
+    // the who's-who: each agent's lane, shown as a hover title (no lead/star -- all agents equal)
     fetch("/roster",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
-      .then(function(j){ if(j&&j.roster){ rosterMap={}; j.roster.forEach(function(a){ rosterMap[a.id]=a; }); renderAgents(); } })
+      .then(function(j){ if(j&&j.roster){ rosterList=j.roster; rosterMap={}; j.roster.forEach(function(a){ rosterMap[a.id]=a; }); renderAgents(); } })
       .catch(function(){});
   }
   function loadTyping(){
@@ -316,6 +339,11 @@
         typingSet=s; if(changed) renderAgents(); })
       .catch(function(){});
   }
+  function loadTtsState(){
+    // if a server-side speaker is live, the browser TTS stands down (no double up)
+    fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
+      .then(function(j){ if(j){ serverTts=!!j.server; } }).catch(function(){});
+  }
   function loadMemory(){
     // fetch the current per-agent memory flags so the book icons render lit/dim correctly
     if(!controlOn) return;
@@ -325,8 +353,8 @@
       .catch(function(){});
   }
   function toggleMemory(name){
-    // flip -p <-> long-term memory for one agent; the server writes it to the git-ignored fleet
-    // file, and each agent re-reads that fresh on its next message (no restart). Optimistic UI.
+    // flip -p <-> long-term memory for one agent; the server writes it to the git-ignored
+    // data/settings.json, and each agent re-reads that fresh on its next message (no restart). Optimistic UI.
     var on=!memoryState[name];
     memoryState[name]=on; renderAgents();
     fetch("/control/memory",{method:"POST",headers:headers({"Content-Type":"application/json"}),
@@ -364,6 +392,59 @@
         else if(res.s>=400){ alert("Couldn't add agent: "+(res.j.error||res.s)); }
         else { poll(); }
       }).catch(function(){ alert("Couldn't reach the server."); });
+  }
+
+  // ---------- slash commands: type / to see + pick; some are handled here (not posted) ----------
+  var SLASH=[
+    {cmd:"/clear",    desc:"Clear the board history (for everyone)"},
+    {cmd:"/mute",     desc:"Mute agent voices"},
+    {cmd:"/unmute",   desc:"Unmute agent voices"},
+    {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
+    {cmd:"/help",     desc:"Show these commands"}
+  ];
+  var sBox=null, sItems=[], sSel=0;
+  function slashOpen(){ return !!sBox; }
+  function slashClose(){ if(sBox){ sBox.remove(); sBox=null; } sItems=[]; sSel=0; }
+  function slashRender(){
+    var m=$("#text").value.match(/^\/([a-z]*)$/i);   // a command name being typed, no args yet
+    if(!m){ slashClose(); return; }
+    var matches=SLASH.filter(function(c){ return c.cmd.slice(1).indexOf(m[1].toLowerCase())===0; });
+    if(!matches.length){ slashClose(); return; }
+    sItems=matches; if(sSel>=matches.length) sSel=matches.length-1; if(sSel<0) sSel=0;
+    if(!sBox){ sBox=document.createElement("div"); sBox.className="mention"; $("#form").appendChild(sBox); }
+    sBox.innerHTML="";
+    matches.forEach(function(c,idx){
+      var mi=document.createElement("div"); mi.className="mi"+(idx===sSel?" sel":"");
+      var s=document.createElement("span"); s.textContent=c.cmd; s.style.fontWeight="600"; mi.appendChild(s);
+      var d=document.createElement("span"); d.className="mrole"; d.textContent=c.desc; mi.appendChild(d);
+      mi.addEventListener("mousedown", function(e){ e.preventDefault(); slashChoose(idx); });
+      sBox.appendChild(mi);
+    });
+    var ta=$("#text"), fr=$("#form").getBoundingClientRect(), tr=ta.getBoundingClientRect();
+    sBox.style.left=Math.max(0,(tr.left-fr.left))+"px"; sBox.style.bottom=(fr.bottom-tr.top+6)+"px";
+  }
+  function slashChoose(idx){
+    if(idx<0||idx>=sItems.length){ slashClose(); return; }
+    var c=sItems[idx], ta=$("#text");
+    ta.value = c.cmd==="/poll" ? "/poll " : c.cmd;   // /poll needs options -> leave room to type them
+    slashClose(); ta.focus();
+  }
+  function showCommands(){ var ta=$("#text"); ta.value="/"; ta.focus(); slashRender(); }
+  function handleSlash(text){   // returns true if handled locally (do NOT post it)
+    if(text==="/clear"){ doClear(); return true; }
+    if(text==="/mute"){ setMuted(true); $("#text").value=""; renderChips(); return true; }
+    if(text==="/unmute"){ setMuted(false); $("#text").value=""; renderChips(); return true; }
+    if(text==="/shutdown"){ $("#text").value=""; renderChips(); shutdownServer(); return true; }
+    if(text==="/help"){ showCommands(); return true; }
+    return false;
+  }
+  function doClear(){
+    if(!confirm("Clear the board history for everyone? This can't be undone.")) return;
+    fetch("/control/clear",{method:"POST",headers:headers()}).then(function(r){
+      if(r.status===401){ askToken(); return; }
+      if(r.status===404){ alert("Clear needs the server started with --control."); return; }
+      msgs.innerHTML=""; allMsgs=[]; seen={}; counts={}; lastId=0; $("#text").value=""; renderChips(); poll();
+    }).catch(function(){ alert("Couldn't reach the server."); });
   }
 
   function add(m){
@@ -416,6 +497,7 @@
     e.preventDefault();
     var sender=($("#who").value||"you").trim(), text=$("#text").value.trim();
     if(!text) return;
+    if(handleSlash(text)){ return; }   // /clear, /help -> handled locally, not posted to the board
     $("#send").disabled=true;
     fetch("/post", {method:"POST", headers:headers({"Content-Type":"application/json"}),
       body:JSON.stringify({sender:sender, text:text, tags:[]})})
@@ -486,7 +568,7 @@
     ta.value=ta.value.replace(new RegExp("(^|[\\s(])@"+esc+"\\b[ ]?","gi"),"$1").replace(/[ ]{2,}/g," ").replace(/^ +/,"");
     renderChips(); ta.focus();
   }
-  $("#text").addEventListener("input", function(){ renderChips(); var t=mToken(); if(t) mRender(t.q); else mClose(); });
+  $("#text").addEventListener("input", function(){ renderChips(); var t=mToken(); if(t) mRender(t.q); else mClose(); slashRender(); });
   $("#text").addEventListener("keydown", function(e){   // registered BEFORE the send-handler -> intercepts Enter when the list is open
     if(!mBox) return;
     if(e.key==="ArrowDown"){ e.preventDefault(); mSel=(mSel+1)%mItems.length; mRender((mToken()||{q:""}).q); }
@@ -494,9 +576,17 @@
     else if(e.key==="Enter"||e.key==="Tab"){ e.preventDefault(); e.stopImmediatePropagation(); mChoose(mSel); }
     else if(e.key==="Escape"){ e.preventDefault(); e.stopImmediatePropagation(); mClose(); }
   });
-  $("#text").addEventListener("blur", function(){ setTimeout(mClose, 150); });
-  // Enter sends -- unless the @-mention list is open (that case is handled above)
-  $("#text").addEventListener("keydown", function(e){ if(e.key==="Enter" && !e.shiftKey && !mOpen()){ e.preventDefault(); $("#form").requestSubmit(); }});
+  $("#text").addEventListener("blur", function(){ setTimeout(function(){ mClose(); slashClose(); }, 150); });
+  // slash-palette nav (registered before the send-handler so Enter picks a command, not sends)
+  $("#text").addEventListener("keydown", function(e){
+    if(!sBox) return;
+    if(e.key==="ArrowDown"){ e.preventDefault(); sSel=(sSel+1)%sItems.length; slashRender(); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); sSel=(sSel-1+sItems.length)%sItems.length; slashRender(); }
+    else if(e.key==="Enter"||e.key==="Tab"){ e.preventDefault(); e.stopImmediatePropagation(); slashChoose(sSel); }
+    else if(e.key==="Escape"){ e.preventDefault(); e.stopImmediatePropagation(); slashClose(); }
+  });
+  // Enter sends -- unless the @-mention list or the / palette is open (handled above)
+  $("#text").addEventListener("keydown", function(e){ if(e.key==="Enter" && !e.shiftKey && !mOpen() && !slashOpen()){ e.preventDefault(); $("#form").requestSubmit(); }});
   // remember the name you post under, so you're not a default "you"
   var savedName=localStorage.getItem("fleetchat_name"); if(savedName){ $("#who").value=savedName; }
   $("#who").addEventListener("change", function(){ localStorage.setItem("fleetchat_name", ($("#who").value||"").trim()); });
@@ -521,7 +611,9 @@
   }
   var pollTimer=setInterval(poll, 2000);
   var typeTimer=setInterval(loadTyping, 1200);
-  poll(); loadTyping();
+  var rosterTimer=setInterval(loadRoster, 4000);   // catch + Add agent / x edits to the lineup
+  var ttsTimer=setInterval(loadTtsState, 5000);    // browser TTS auto-stands-down when a server speaker is live
+  poll(); loadTyping(); loadTtsState();
 })();
 </script>
 </body>

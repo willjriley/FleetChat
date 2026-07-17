@@ -2,21 +2,26 @@
 """
 FleetChat -- one command to bring the whole crew up.
 
-    python run.py            # fresh demo board, launch the crew, open the UI
-    python run.py --keep     # keep whatever is already on the board
-    python run.py --no-demo  # agents join, but skip the scripted round-table
-    python run.py --port N   # use a different port (default 8137)
-    python run.py --live     # agents reply for real via the local `claude` CLI (spends tokens)
-    python run.py --stop     # stop a crew a previous launch left running
+    python run.py             # board + re-launch your saved data/roster.json lineup (empty on first run)
+    python run.py --keep      # keep whatever is already on the board (don't wipe history)
+    python run.py --demo      # opt-in showcase: the example crew + a short scripted round-table
+    python run.py --live      # agents reply for real via the local `claude` CLI (spends tokens)
+    python run.py --control   # force the add-agent / shutdown controls ON (already on for a loopback board)
+    python run.py --port N    # use a different port (default 8137)
+    python run.py --bind ADDR # bind address (default 127.0.0.1; a non-loopback bind requires a token)
+    python run.py --stop      # stop a crew a previous launch left running
 
-It starts the board server (loopback by default -- a sealed local fleet), waits for it to
-be healthy, launches the example agents so they join and introduce themselves, plays a short
-scripted round-table, and opens the UI.
+By DEFAULT it starts the board server (loopback -- a sealed local fleet), waits for it to be
+healthy, opens the UI, and re-launches the PERSISTED lineup from data/roster.json. On a fresh
+clone that lineup is empty: click '+ Add agent', point it at a project folder, and an agent
+joins live -- the '+' button appends it to data/roster.json (git-ignored) and the 'x' button
+removes it, so the crew you build is restored on the next launch. Pass --demo instead to bring
+up the example personas and play a short scripted round-table that SHOWS the pattern.
 
 STOPPING IT: press Ctrl-C in this terminal. Especially on Windows, do NOT just close the
 window -- that orphans the board + agents (they keep holding the port), and the next launch
-will report the port busy. If that happens, `python run.py --stop` clears them. (The example
-agents also self-exit a minute after the board disappears, so orphans are self-healing.)
+will report the port busy. If that happens, `python run.py --stop` clears them. (The agents
+also self-exit a minute after the board disappears, so orphans are self-healing.)
 
 Nothing here needs installing -- it is all the Python standard library.
 """
@@ -40,6 +45,20 @@ sys.path.insert(0, str(REPO / "skill" / "fleet-chat"))
 from fleetchat import Board  # noqa: E402
 
 PERSONA_ORDER = ["lodestar", "muse", "aegis", "keystone", "lumen"]
+
+ROSTER_FILE = REPO / "data" / "roster.json"
+
+
+def read_roster_list():
+    """The PERSISTED lineup (data/roster.json) a restart re-launches: [{"name":..., "dir"?:...}].
+    Written by the board's + Add agent / x controls; git-ignored so it never enters the repo."""
+    if ROSTER_FILE.is_file():
+        try:
+            d = json.loads(ROSTER_FILE.read_text(encoding="utf-8"))
+            return [x for x in d if isinstance(x, dict) and x.get("name")] if isinstance(d, list) else []
+        except Exception:
+            return []
+    return []
 
 
 def fleet_file():
@@ -202,7 +221,7 @@ def main():
 
     keep = "--keep" in sys.argv
     demo = "--demo" in sys.argv  # opt-in: --demo brings up the example crew + scripted round-table (the showcase)
-    live = ("--live" in sys.argv) or not demo  # default empty board -> agents you add reply for real; --demo is scripted unless --live
+    live = ("--live" in sys.argv) or not demo  # default (non-demo) board -> agents you add reply for real; --demo is scripted unless --live
     if live:
         os.environ["FLEETCHAT_LIVE"] = "1"  # inherited by added agents (and the example crew under --demo --live)
     if "--control" in sys.argv:
@@ -245,10 +264,13 @@ def main():
     # Open the UI BEFORE the crew posts, so a first-time viewer watches the agents arrive
     # and the round-table unfold live -- and (after one click, which the browser's autoplay
     # rule requires) hears them -- instead of opening to an already-finished transcript.
+    roster = read_roster_list() if not demo else []  # DEFAULT: the persisted lineup a restart restores
     print("\n" + "=" * 62)
     print(f"  FleetChat is live  ->  {url}/")
     if demo:
         print("  Example crew assembling -- add --live to make them think + speak for real.")
+    elif roster:
+        print("  Restoring your saved lineup -- click '+ Add agent' to add more; they persist.")
     else:
         print("  Empty board. Click '+ Add agent', point it at a project folder, and it joins live.")
     print("  Stop with Ctrl-C here -- don't just close the window.")
@@ -266,8 +288,25 @@ def main():
             procs.append(subprocess.Popen([PY, str(REPO / "agents" / "run_agent.py"), name]))
             labels.append(name)
             time.sleep(0.5)
-    else:  # DEFAULT: an empty board -- you build your own crew with the '+ Add agent' button (point each at a project folder)
-        print("[run] empty board -- click '+ Add agent' and point it at a project folder to add your first agent.")
+    else:  # DEFAULT: re-launch the PERSISTED lineup (data/roster.json) -- what + Add agent / x edit and a restart restores
+        if roster:
+            # No forced lead -- all agents equal; a leader is opt-in (set "lead" in your fleet file).
+            print("[run] restoring the saved lineup (%d agent%s) from data/roster.json ..." % (len(roster), "" if len(roster) == 1 else "s"))
+            for entry in roster:
+                nm = entry.get("name")
+                if not (isinstance(nm, str) and re.fullmatch(r"[a-z0-9_-]+", nm)):
+                    continue
+                if entry.get("seat"):   # a live-session seat (e.g. an interactive conductor) -- shown in the
+                    continue            # roster, but NOT spawned as a responder; a running session fills it
+                args = [PY, str(REPO / "agents" / "run_agent.py"), nm]
+                d = entry.get("dir")
+                if isinstance(d, str) and d:
+                    args += ["--dir", d]
+                procs.append(subprocess.Popen(args))
+                labels.append(nm)
+                time.sleep(0.4)
+        else:
+            print("[run] empty board -- click '+ Add agent' and point it at a project folder to add your first agent.")
 
     # Record labelled PIDs (one "name pid" per line) so `--stop` can clean up even after an
     # unclean window-close, and so a future control can boot a member by name.
