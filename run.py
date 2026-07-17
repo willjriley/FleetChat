@@ -7,6 +7,7 @@ FleetChat -- one command to bring the whole crew up.
     python run.py --demo      # opt-in showcase: the example crew + a short scripted round-table
     python run.py --live      # agents reply for real via the local `claude` CLI (spends tokens)
     python run.py --control   # force the add-agent / shutdown controls ON (already on for a loopback board)
+    python run.py --speak     # also start the server-side voice (run scripts/download_voices.py first)
     python run.py --port N    # use a different port (default 8137)
     python run.py --bind ADDR # bind address (default 127.0.0.1; a non-loopback bind requires a token)
     python run.py --stop      # stop a crew a previous launch left running
@@ -307,6 +308,16 @@ def main():
                 time.sleep(0.4)
         else:
             print("[run] empty board -- click '+ Add agent' and point it at a project folder to add your first agent.")
+
+    # Optional server-side voice: --speak starts the kokoro speaker (nicer than the browser voices;
+    # while it runs it heartbeats the board, so the page's browser TTS stands down automatically).
+    if "--speak" in sys.argv:
+        if (REPO / "data" / "voices" / "kokoro-v1.0.onnx").exists():
+            print("[run] starting the voice speaker (server-side kokoro TTS) ...")
+            procs.append(subprocess.Popen([PY, str(REPO / "agents" / "speaker.py")]))
+            labels.append("speaker")
+        else:
+            print("[run] --speak: high-quality voices aren't installed yet -- run:  python scripts/download_voices.py")
 
     # Record labelled PIDs (one "name pid" per line) so `--stop` can clean up even after an
     # unclean window-close, and so a future control can boot a member by name.
