@@ -80,6 +80,45 @@ def read_crew():
     return crew
 
 
+def read_roster():
+    """The configured crew + their lanes, for the who's-who UI. Resolves the fleet file
+    (FLEETCHAT_FLEET_FILE > fleet.local.json > fleet.json) and each member's agent.json
+    (personas.local/ preferred, then personas/). Read-only; safe on a networked board."""
+    ff = os.environ.get("FLEETCHAT_FLEET_FILE")
+    fleet = {}
+    for p in ([Path(ff).expanduser()] if ff else []) + [REPO / "fleet.local.json", REPO / "fleet.json"]:
+        try:
+            if p.is_file():
+                fleet = json.loads(p.read_text(encoding="utf-8"))
+                break
+        except Exception:
+            pass
+    lead = fleet.get("lead", "")
+    crew_ids = fleet.get("crew", []) if isinstance(fleet.get("crew"), list) else []
+    pbases = []
+    pd = os.environ.get("FLEETCHAT_PERSONAS_DIR")
+    if pd:
+        pbases.append(Path(pd).expanduser())
+    pbases += [REPO / "personas.local", REPO / "personas"]
+    roster = []
+    for cid in crew_ids:
+        cid = str(cid)
+        if not re.fullmatch(r"[a-z0-9_-]+", cid):
+            continue
+        name, role = cid.capitalize(), ""
+        for base in pbases:
+            aj = base / cid / "agent.json"
+            if aj.is_file():
+                try:
+                    d = json.loads(aj.read_text(encoding="utf-8"))
+                    name, role = d.get("name", name), d.get("role", "")
+                except Exception:
+                    pass
+                break
+        roster.append({"id": cid, "name": name, "role": role, "lead": cid == lead})
+    return roster
+
+
 def write_crew(crew):
     DATA.mkdir(parents=True, exist_ok=True)
     (DATA / "run.pids").write_text("\n".join("%s %d" % (n, p) for n, p in crew.items()), encoding="utf-8")
@@ -187,6 +226,7 @@ class Board:
         self._lock = threading.Lock()
         self._messages = []
         self._next_id = 1
+        self._typing = {}          # agent id -> last "composing" ping ts (drives the UI's animated …)
         DATA.mkdir(parents=True, exist_ok=True)
         if BOARD_FILE.exists():
             for line in BOARD_FILE.read_text(encoding="utf-8").splitlines():
@@ -218,6 +258,29 @@ class Board:
     def since(self, since_id):
         with self._lock:
             return [m for m in self._messages if m["id"] > since_id]
+
+    TYPING_CAP = 64   # far above any real crew; bounds the dict so a valid-token flood can't balloon it
+
+    def set_typing(self, agent, on):
+        """Mark an agent as composing (on) or done (off) -- drives the animated … in the UI.
+        Bounded: at the cap, stale pings are pruned first, then new names are ignored (live
+        entries self-expire via typing_now's ttl), so a flood of distinct names can't grow it."""
+        with self._lock:
+            if not on:
+                self._typing.pop(agent, None)
+                return
+            if agent not in self._typing and len(self._typing) >= self.TYPING_CAP:
+                now = time.time()
+                self._typing = {a: t for a, t in self._typing.items() if now - t <= 180}
+            if agent in self._typing or len(self._typing) < self.TYPING_CAP:
+                self._typing[agent] = time.time()
+
+    def typing_now(self, ttl=180):
+        """Ids composing right now. Pings older than ttl are dropped, so a responder that
+        dies mid-reply never leaves a … stuck on the board."""
+        now = time.time()
+        with self._lock:
+            return sorted(a for a, ts in self._typing.items() if now - ts <= ttl)
 
 
 # --------------------------------------------------------------------------- #
@@ -299,6 +362,12 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     since = 0
             return self._send_json({"messages": self.board.since(since)})
+        if route.path == "/typing":
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"typing": self.board.typing_now()})
+        if route.path == "/roster":
+            return self._send_json({"roster": read_roster()})
         if route.path == "/control/memory":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -412,6 +481,15 @@ class Handler(BaseHTTPRequestHandler):
             if not out:
                 return self._send_json({"error": "cancelled"}, 400)
             return self._send_json({"ok": True, "folder": out})
+        if route.path == "/typing":
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            agent = (data.get("agent") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", agent):
+                return self._send_json({"error": "bad agent"}, 400)
+            self.board.set_typing(agent, bool(data.get("on")))
+            return self._send_json({"ok": True, "agent": agent, "on": bool(data.get("on"))})
         if route.path != "/post":
             return self._send_json({"error": "not found"}, 404)
         if not self._authed():

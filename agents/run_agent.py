@@ -166,7 +166,10 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
               "\n\n---\nYou are " + cfg["name"] + " (" + cfg.get("role", "") + "). Reply IN CHARACTER, "
               "warmly and briefly (1-3 sentences), IF: you're addressed by name, OR your lane is "
               "relevant, OR it's a greeting/opener a friendly crew member would naturally answer. "
-              "markdown / `code` / links are fine. But if another member is clearly better placed and "
+              "markdown / `code` / links are fine. NEVER invent facts, status, or numbers you can't "
+              "confirm from the messages above -- if asked something specific you don't actually know, "
+              "say you'll check or defer to the lead rather than "
+              "guessing. But if another member is clearly better placed and "
               "you'd just be echoing, reply with exactly: PASS and nothing else. Don't all pile on -- "
               "one or two good replies beat five.")
     base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
@@ -215,10 +218,13 @@ def main(name):
     is_lead = (cfg["id"] == lead) if lead else True
     board = Board()
     intro = cfg.get("intro", cfg["name"] + " on the board.")
-    board.post(cfg["id"], intro + ("  (live)" if LIVE else ""), tags=["join"])
+    joined = board.post(cfg["id"], intro + ("  (live)" if LIVE else ""), tags=["join"])
     print("[%s] joined%s." % (cfg["id"], " (live)" if LIVE else ""))
 
-    last = 0
+    # Start from the moment we joined -- a fresh responder answers NEW messages; it must NOT
+    # replay (and re-run claude on) the whole board history at every startup. That backlog churn
+    # is what pinned the typing … on every agent for minutes after a restart.
+    last = int(joined.get("id", 0)) if isinstance(joined, dict) else 0
     misses = 0
     last_reply = 0.0
     mem_state = {}  # per-agent, persists for this process's life: tracks its memory session
@@ -234,10 +240,14 @@ def main(name):
                         # context, so a remembering session isn't re-stuffed with its own tail
                         ctx = board.messages(0)[-(4 if sid else 12):]
                         text = "\n".join((x["sender"] + ": " + x["text"]) for x in ctx)
-                        reply = claude_reply(cfg, persona, text, session_id=sid, state=mem_state)
-                        if reply:
+                        board.set_typing(cfg["id"], True)      # animated … in the UI while the model thinks
+                        try:
+                            reply = claude_reply(cfg, persona, text, session_id=sid, state=mem_state)
+                        finally:
+                            board.set_typing(cfg["id"], False)
+                        last_reply = time.time()   # cool down after EVERY engage (even a PASS) so a
+                        if reply:                  # burst can't rapid-fire claude / flicker the typing …
                             board.post(cfg["id"], reply)
-                            last_reply = time.time()
                 else:
                     line = respond_demo(cfg, persona, m)
                     if line:
