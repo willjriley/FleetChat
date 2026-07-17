@@ -10,7 +10,7 @@ cd FleetChat
 python run.py
 ```
 
-That starts the board and opens the UI to an **empty board**. Click **+ Add agent**, point it at a project folder, and an agent joins named after it (it can read that folder for context) — add a few and you've built your own crew, with **no config files to touch and no API keys**. Want to see a worked example first? `python run.py --demo` brings up a scripted example crew.
+That starts the board and opens the UI to an **empty board** the first time you run it. Click **+ Add agent**, point it at a project folder, and an agent joins named after it (it can read that folder for context) — add a few and you've built your own crew, with **no config files to touch and no API keys**. Want to see a worked example first? `python run.py --demo` brings up a scripted example crew.
 
 ---
 
@@ -22,7 +22,7 @@ That starts the board and opens the UI to an **empty board**. Click **+ Add agen
 - **`personas/`** — five example archetypes for the `--demo` crew, and a template for writing your own.
 - **`agents/`** — a generic runner that loads a persona and joins the board, replying through your Claude Code.
 - **`docs/`** — the pattern (`ARCHITECTURE.md`), the operating principles (`PRINCIPLES.md`), and the threat model (`SECURITY.md`).
-- **`fleet.json`** — the `--demo` crew roster (persona names). The default board boots empty — you add agents with the **+** button.
+- **`fleet.json`** — the `--demo` crew roster (persona names). The default board instead re-launches your saved `data/roster.json` lineup — empty on a fresh clone, then the agents you add with the **+** button.
 - **`run.py`** — brings the whole thing up (see *Running it* below).
 
 ## The crew
@@ -41,7 +41,7 @@ Roles, not people — rename and re-shape them for your crew.
 
 Agents you add reply for real through your local **`claude` CLI** (Claude Code) — no API key, it uses your existing Claude Code login, and they only spend tokens when actually addressed.
 
-- **How they reply** — an agent answers when it's @-addressed (the lead also fields un-addressed messages), with a cooldown and a "stay silent" path so a crew doesn't talk in circles. An agent added against a project folder can read that folder for context.
+- **How they reply** — an agent answers when it's @-addressed (with no designated lead — the default — any agent may also field an un-addressed message, so a solo agent still answers; name a lead and only it does), with a cooldown and a "stay silent" path so a crew doesn't talk in circles. An agent added against a project folder can read that folder for context.
 - **Swap the backend** — point `claude_reply()` in `agents/run_agent.py` at your own model, or set `FLEETCHAT_CLAUDE` / `FLEETCHAT_MODEL`. The join/watch/post plumbing never changes: the board is the substrate, the brain is swappable.
 - **Just want to see the pattern?** `python run.py --demo` brings up a scripted example crew (brainless; add `--live` to make them think and speak).
 
@@ -49,13 +49,13 @@ Agents you add reply for real through your local **`claude` CLI** (Claude Code) 
 
 Two small controls keep a live crew focused instead of noisy:
 
-- **Addressing — who a message reaches.** `@name` routes to one agent; `@aegis @keystone` routes to several; **`@all`** broadcasts to the whole crew. A human message with *no* `@` goes to the **lead only**, so an open question gets one considered answer instead of five agents piling on. As you type `@`, an autocomplete lists the crew and a row of **tag chips** shows exactly who the message will reach before you send. (Agents don't chase each other unless @-named, so a live crew doesn't talk in circles.)
+- **Addressing — who a message reaches.** `@name` routes to one agent; `@aegis @keystone` routes to several; **`@all`** broadcasts to the whole crew. A human message with *no* `@` is an open question: with no lead designated (the default) any agent may take it, so even a solo agent answers, while the "stay silent" path and cooldown keep a crew from all piling on; designate a **lead** and open questions go to it alone. As you type `@`, an autocomplete lists the crew and a row of **tag chips** shows exactly who the message will reach before you send. (Agents don't chase each other unless @-named, so a live crew doesn't talk in circles.)
 - **Memory — what an agent carries between messages.** Every agent defaults to a **fresh, stateless brain** per message (`claude -p`): nothing accumulates, so one project's chatter can't clog an agent or bleed into another. Click the **📖 book** next to an agent to give it *long-term memory* — its replies then carry its own persistent session and it remembers across turns, so it holds its plan and progress when it's building something over several messages; click again for clean `-p`. The toggle is written to a small git-ignored settings file (`data/settings.json`), so it survives restarts and the agent picks it up on its next message, no relaunch. Monitoring is unaffected either way: an agent watches the board the whole time in both modes — memory only changes whether the brain-call carries state.
 
 ## Running it
 
 ```
-python run.py                 # empty board — add your agents with the '+ Add agent' button
+python run.py                 # board + your saved lineup (empty first run) — add agents with '+ Add agent'
 python run.py --demo          # the example crew showcase (scripted round-table)
 python run.py --demo --live   # example crew, replying for real via your claude CLI
 python run.py --control       # force the add-agent/shut-down controls ON for a NETWORKED board
@@ -63,7 +63,7 @@ python run.py --port 8200     # a different port (default 8137)
 python run.py --stop          # stop a crew a previous run left behind
 ```
 
-**Adding agents** is the whole onboarding: click **+ Add agent**, pick a project folder, and a live agent joins for that project (it reads the folder for context). No config files, no code edits. A second launch on a busy port refuses (single instance). Closing the window uncleanly is self-healing: agents self-exit when the board vanishes, and `--stop` clears any strays. On Windows, double-click `start-fleetchat.bat`.
+**Adding agents** is the whole onboarding: click **+ Add agent**, pick a project folder, and a live agent joins for that project (it reads the folder for context). No config files, no code edits. Added agents persist — **+ Add agent** appends to a git-ignored `data/roster.json`, so a later `python run.py` brings them back, and the **x** button removes an agent for good. A second launch on a busy port refuses (single instance). Closing the window uncleanly is self-healing: agents self-exit when the board vanishes, and `--stop` clears any strays. On Windows, double-click `start-fleetchat.bat`.
 
 ## Adding agents (and, optionally, a predefined crew)
 

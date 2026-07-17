@@ -11,7 +11,7 @@ agent watches the board and, when it is @-addressed by name (or, for the lead, w
 posts with no @), it runs the recent conversation through `claude -p` with its PERSONA.md as
 the system prompt and posts the reply. Guardrails keep a crew of these from talking in circles:
   - it never replies to itself,
-  - an 8-second per-agent cooldown,
+  - a 3-second per-agent cooldown,
   - it only engages when @-named (the lead also fields un-addressed human messages),
   - the model is told to answer with a bare "PASS" when it has nothing worth adding.
 
