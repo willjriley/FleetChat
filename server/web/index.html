@@ -73,6 +73,13 @@
      same per-name hue() the avatars use (passed in as --mc-h); @all + the row accent use --accent. */
   .mchip{display:inline;padding:0 5px;border-radius:6px;font-weight:600;white-space:nowrap;background:hsla(var(--mc-h,210),65%,45%,.16);color:hsl(var(--mc-h,210),58%,38%)}
   @media (prefers-color-scheme:dark){ .mchip{background:hsla(var(--mc-h,210),60%,58%,.22);color:hsl(var(--mc-h,210),80%,74%)} }
+  /* A FORCED theme (the settings picker's data-theme) must override the OS media query above --
+     source order wins at equal specificity. Dark-family themes get the dark chip variant, light-
+     family the light one. A new palette added later needs one selector added to the right list. */
+  html[data-theme="dark"] .mchip, html[data-theme="dusk"] .mchip, html[data-theme="harbor"] .mchip{
+    background:hsla(var(--mc-h,210),60%,58%,.22);color:hsl(var(--mc-h,210),80%,74%)}
+  html[data-theme="light"] .mchip, html[data-theme="sepia"] .mchip{
+    background:hsla(var(--mc-h,210),65%,45%,.16);color:hsl(var(--mc-h,210),58%,38%)}
   .mchip-all{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);font-weight:700}
   .msg.tagged{background:color-mix(in srgb,var(--accent) 10%,transparent);border-left:3px solid var(--accent);border-radius:8px;padding:8px 12px}
   .code{position:relative;margin:8px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--codebg)}
