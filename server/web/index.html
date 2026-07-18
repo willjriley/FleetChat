@@ -993,8 +993,8 @@
         var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
         var ct=document.createElement("div"); ct.className="ct"; ct.textContent=t.title; c.appendChild(ct);
         var meta=document.createElement("div"); meta.className="cmeta";
-        if(t.owner){ meta.appendChild(av(t.owner)); }
-        (t.assignees||[]).forEach(function(a){ if(a!==t.owner) meta.appendChild(av(a)); });
+        if(t.owner){ var ob=av(t.owner); ob.title="owner: "+t.owner; meta.appendChild(ob); }
+        (t.assignees||[]).forEach(function(a){ if(a!==t.owner){ var ab=av(a); ab.title="assigned: "+a; meta.appendChild(ab); } });
         var age=document.createElement("span"); age.className="cage"; age.textContent=t.id+" · "+tage(t.updated); meta.appendChild(age);
         c.appendChild(meta);
         if(t.status==="done"&&t.summary){ var s=document.createElement("div"); s.className="csum"; s.textContent=t.summary; c.appendChild(s); }
