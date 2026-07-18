@@ -144,6 +144,26 @@ def agent_model(name):
     return MODEL_DEFAULT
 
 
+def agent_cli_template(name):
+    """This agent's custom CLI invocation, if the Settings page has set one -- a list of argv
+    TOKENS (never a shell string) with {bin}/{prompt}/{persona}/{model} placeholders, read FRESH
+    each engage (same pattern as agent_model). None means "use the normal Claude-shaped path."
+    v1 is stateless-only: a template applies with no --resume/--session-id, regardless of the
+    memory toggle -- generalizing the create/resume flag pair to an arbitrary CLI is real added
+    complexity a v1 doesn't need; see the Settings UI copy for this documented limitation."""
+    sf = REPO / "data" / "settings.json"
+    if sf.is_file():
+        try:
+            t = json.loads(sf.read_text(encoding="utf-8")).get("cli_template")
+        except Exception:
+            t = None
+        if isinstance(t, dict):
+            tokens = t.get(name)
+            if isinstance(tokens, list) and tokens and all(isinstance(x, str) for x in tokens):
+                return tokens
+    return None
+
+
 def addressed(name, text):
     # The @ is REQUIRED: bare prose that happens to contain an agent name ("i hope so", "max effort") must not route -- with everyday-word
     # agent names, optional-@ both mis-engaged agents and suppressed the lead fallback.
@@ -228,12 +248,22 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
               "the card id as your receipt. But if another member is clearly better placed and "
               "you'd just be echoing, reply with exactly: PASS and nothing else. Don't all pile on -- "
               "one or two good replies beat five.")
-    base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
-    if FOLDER:
-        base += ["--add-dir", FOLDER]
     model = agent_model(cfg["id"])   # fresh read -- a Settings-page edit takes effect next turn
-    if model:
-        base += ["--model", model]
+    template = agent_cli_template(cfg["id"])
+    if template:
+        # A custom CLI: substitute placeholders PER TOKEN, never build a shell string -- each
+        # substituted value (prompt/persona content is live chat text) stays isolated as one
+        # opaque argv element regardless of what characters it contains. v1 is stateless-only:
+        # ignore whatever session_id we were handed and take the plain path below, unconditionally.
+        subs = {"{bin}": CLAUDE, "{prompt}": prompt, "{persona}": persona[:6000], "{model}": model or ""}
+        base = [subs.get(tok, tok) for tok in template]   # exact-token match only, no partial substitution
+        session_id = None
+    else:
+        base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
+        if FOLDER:
+            base += ["--add-dir", FOLDER]
+        if model:
+            base += ["--model", model]
 
     fail = {}
 

@@ -191,6 +191,16 @@
   .set-crew .set-badge{margin-left:auto}
   .set-badge.on{background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--ink)}
   .set-note{margin-top:16px; font-size:12px; color:var(--muted); font-style:italic}
+  .cli-btn{margin-left:auto; font:inherit; font-size:11px; color:var(--muted); background:var(--chip); border:1px solid var(--line); border-radius:20px; padding:1px 10px; cursor:pointer; flex:none}
+  .cli-btn:hover{border-color:var(--accent); color:var(--ink)}
+  .cli-row{width:100%; padding:8px 0 4px; border-bottom:1px solid var(--line)}
+  .cli-row:last-child{border-bottom:0}
+  .cli-ta{width:100%; box-sizing:border-box; resize:vertical; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:12.5px ui-monospace,Consolas,monospace}
+  .cli-btns{display:flex; gap:8px; margin-top:6px}
+  .cli-btns button{font:inherit; font-size:12px; color:var(--ink); background:var(--chip); border:1px solid var(--line); border-radius:7px; padding:3px 11px; cursor:pointer}
+  .cli-btns button:hover{border-color:var(--accent)}
+  .cli-err{margin:6px 0 0; color:color-mix(in srgb, #e5484d 60%, var(--ink)); font-style:normal; min-height:0}
+  .cli-err:empty{margin:0}
   /* Appearance: theme swatch buttons (bg preview + accent dot) */
   .theme-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 1fr)); gap:9px}
   .theme-sw{border:1px solid var(--line); border-radius:11px; padding:8px; cursor:pointer; background:var(--panel); color:var(--ink); text-align:left; font:inherit; font-size:12px; display:flex; flex-direction:column; gap:7px; transition:border-color .15s ease, box-shadow .15s ease}
@@ -1167,8 +1177,10 @@
     var rosP=fetch("/roster",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
     var memP=fetch("/control/memory",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
     var mdlP=fetch("/control/model",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-    Promise.all([rosP,memP,mdlP]).then(function(res){
+    var cliP=fetch("/control/clitemplate",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    Promise.all([rosP,memP,mdlP,cliP]).then(function(res){
       var roster=(res[0]&&res[0].roster)||[], mem=(res[1]&&res[1].memory)||null, mdl=(res[2]&&res[2].model)||{};
+      var cli=(res[3]&&res[3].cli_template)||{};
       crewBox.innerHTML="";
       if(!roster.length){ crewBox.appendChild(el("div","set-note","No crew on the board.")); return; }
       roster.forEach(function(a){
@@ -1196,10 +1208,42 @@
           inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); inp.blur(); } });
           inp.addEventListener("blur", save);
           r.appendChild(inp);
+
+          // Custom CLI: a free-typed list of argv tokens (one per line), for pointing this agent
+          // at any CLI, not just Claude -- {bin}/{prompt}/{persona}/{model} get substituted PER
+          // TOKEN (never a shell string), so no chat content can ever break out of its slot. v1
+          // is stateless-only: a template overrides the memory toggle for that agent (no --resume).
+          var cliBtn=el("button","cli-btn", cli[a.id] ? "CLI ✓" : "CLI…");
+          cliBtn.type="button"; cliBtn.title="Point this agent at a different CLI (advanced)";
+          var cliRow=el("div","cli-row"); cliRow.style.display="none";
+          var ta=document.createElement("textarea"); ta.className="cli-ta"; ta.rows=4;
+          ta.placeholder="one argv token per line, e.g.\n{bin}\n-p\n{prompt}\n--system-prompt\n{persona}\n\n(must include a {prompt} line; blank = default Claude CLI)";
+          ta.value=(cli[a.id]||[]).join("\n");
+          var cliErr=el("div","set-note cli-err");
+          var cliSave=el("button",null,"Save"); cliSave.type="button";
+          var cliClear=el("button",null,"Clear"); cliClear.type="button";
+          cliSave.addEventListener("click", function(){
+            var tokens=ta.value.split("\n").map(function(s){return s.trim();}).filter(function(s){return s.length;});
+            fetch("/control/clitemplate",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),
+              body:JSON.stringify({agent:a.id, tokens:tokens})})
+              .then(function(r){ return r.json(); })
+              .then(function(j){ if(j&&j.error){ cliErr.textContent=j.error; }
+                                  else { cliErr.textContent=""; cliBtn.textContent=tokens.length?"CLI ✓":"CLI…"; } })
+              .catch(function(){ cliErr.textContent="couldn't reach the server"; });
+          });
+          cliClear.addEventListener("click", function(){ ta.value=""; cliSave.click(); });
+          cliBtn.addEventListener("click", function(){ cliRow.style.display = cliRow.style.display==="none" ? "" : "none"; });
+          var cliBtns=el("div","cli-btns"); cliBtns.appendChild(cliSave); cliBtns.appendChild(cliClear);
+          cliRow.appendChild(ta); cliRow.appendChild(cliBtns); cliRow.appendChild(cliErr);
+          r.appendChild(cliBtn);
+          crewBox.appendChild(r);
+          crewBox.appendChild(cliRow);
         } else if(mdl[a.id]) {
           r.appendChild(el("span","set-badge on", "model: "+mdl[a.id]));
+          crewBox.appendChild(r);
+        } else {
+          crewBox.appendChild(r);
         }
-        crewBox.appendChild(r);
       });
     });
 
