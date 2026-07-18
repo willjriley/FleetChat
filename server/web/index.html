@@ -492,7 +492,7 @@
   function mentionChip(name){
     var span=document.createElement("span"), lc=(name||"").toLowerCase();
     if(lc==="all"){ span.className="mchip mchip-all"; }
-    else { span.className="mchip"; span.style.setProperty("--mc-h", hue(lc)+""); }
+    else { span.className="mchip"; span.style.setProperty("--mc-h", hue(name)+""); }  // hash the name AS TYPED -- av() hashes the raw sender, so @Will matches Will's avatar
     span.textContent="@"+name;   // textContent -> never re-injects HTML
     return span;
   }
