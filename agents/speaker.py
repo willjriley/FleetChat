@@ -49,6 +49,7 @@ ENGLISH = [v for v in ALL_VOICES if v[:3] in ("af_", "am_", "bf_", "bm_")] or AL
 
 def _headers(extra=None):
     h = dict(extra or {})
+    h["X-Fleet-Client"] = "1"   # proves a genuine client, not a forged cross-site form (see board.py _origin_ok)
     if TOKEN:
         h["X-Fleet-Token"] = TOKEN
     return h

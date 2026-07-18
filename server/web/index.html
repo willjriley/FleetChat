@@ -284,7 +284,7 @@
   function av(s){ var d=document.createElement("div"); d.className="av";
     d.style.background="hsl("+hue(s)+" 55% 45%)"; d.textContent=(s[0]||"?").toUpperCase(); return d; }
   function when(ts){ return new Date(ts*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); }
-  function headers(extra){ var h=Object.assign({}, extra||{}); if(token) h["X-Fleet-Token"]=token; return h; }
+  function headers(extra){ var h=Object.assign({}, extra||{}); h["X-Fleet-Client"]="1"; if(token) h["X-Fleet-Token"]=token; return h; }
 
   // ---------- agent voices: the browser's own speech synthesis (zero dependency) ----------
   var muted = localStorage.getItem("fleetchat_muted")==="1";
@@ -1081,7 +1081,7 @@
   ];
   function ls(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
   function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
-  function hdrs(){ var h={}, t=ls(TOKEN_KEY); if(t) h["X-Fleet-Token"]=t; return h; }
+  function hdrs(){ var h={"X-Fleet-Client":"1"}, t=ls(TOKEN_KEY); if(t) h["X-Fleet-Token"]=t; return h; }
   function getTheme(){ return ls(THEME_KEY)||"system"; }
   function applyTheme(id){
     if(!id||id==="system") document.documentElement.removeAttribute("data-theme");
