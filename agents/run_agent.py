@@ -200,7 +200,9 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
               "markdown / `code` / links are fine. NEVER invent facts, status, or numbers you can't "
               "confirm from the messages above -- if asked something specific you don't actually know, "
               "say you'll check or defer to the lead rather than "
-              "guessing. But if another member is clearly better placed and "
+              "guessing. And NEVER claim work is done or delivered without naming its receipt -- a "
+              "message id, PR number, file path, or command output; if you have no receipt, say so "
+              "plainly. But if another member is clearly better placed and "
               "you'd just be echoing, reply with exactly: PASS and nothing else. Don't all pile on -- "
               "one or two good replies beat five.")
     base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
@@ -232,15 +234,17 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
     else:
         res = _run([])                             # default: stateless, no memory
 
+    # Returns (text_or_None, ok): ok=False means the model NEVER ingested this turn's window
+    # (launch/timeout/exit failure) -- the caller must not advance a memory watermark past it.
     if res is None or res.returncode != 0:
         # dead-man's-switch: never end a turn in silence -- post a terminal status instead
         why = fail.get("why") or ("FAILED (exit %s)" % (res.returncode if res is not None else "?"))
         err = redact(((res.stderr or "").strip()[-300:])) if res is not None else ""  # stderr can carry tokens/keys
-        return ("⚠ headless turn %s -- task NOT completed." % why) + ((" stderr tail: `%s`" % err) if err else "")
+        return (("⚠ headless turn %s -- task NOT completed." % why) + ((" stderr tail: `%s`" % err) if err else ""), False)
     out = (res.stdout or "").strip()
     if not out or out.upper().rstrip(".!") == "PASS":
-        return None
-    return out
+        return (None, True)   # a PASS still ingested the window -- the session remembers it
+    return (out, True)
 
 
 def respond_demo(cfg, persona, msg):
@@ -273,12 +277,30 @@ def main(name):
     # queue below collapses any backlog into ONE turn, so resuming can't churn claude calls.
     # A huge gap (>100 msgs) falls back to the join point -- that's a fresh start, not a restart.
     last = int(joined.get("id", 0)) if isinstance(joined, dict) else 0
+    # Headful watermark (mem_upto): the highest message id the memory SESSION has actually
+    # ingested. None = unknown/new session. PERSISTED in the seen-file and advanced only after a
+    # SUCCESSFUL memory turn, to the last id truly injected -- so toggling memory off/on, a >60
+    # burst, a failed turn, or a restart can never open a silent hole in the session's history.
+    mem_upto = None
     seenf = REPO / "data" / ("seen-%s.json" % cfg["id"])
     if seenf.is_file():
         try:
-            stored = int((json.loads(seenf.read_text(encoding="utf-8")) or {}).get("last", 0))
+            _sd = json.loads(seenf.read_text(encoding="utf-8")) or {}
+            stored = int(_sd.get("last", 0))
             if stored and 0 <= last - stored <= 100:
                 last = stored
+            if _sd.get("mem_upto") is not None:
+                mem_upto = int(_sd["mem_upto"])
+        except Exception:
+            pass
+
+    def save_seen(mark):
+        """Persist the watch pointer + the session watermark together (one tiny json)."""
+        try:
+            d = {"last": mark}
+            if mem_upto is not None:
+                d["mem_upto"] = mem_upto
+            seenf.write_text(json.dumps(d), encoding="utf-8")
         except Exception:
             pass
 
@@ -314,19 +336,33 @@ def main(name):
                 pass
 
     def engage(anchor_id):
-        nonlocal last_reply
+        nonlocal last_reply, mem_upto
         # memory mode is read FRESH here, so a toggle takes effect on the next engage
         sid = agent_session_id(cfg["id"]) if in_memory_mode(cfg["id"]) else None
-        # Context is ANCHORED at the oldest unanswered trigger -- never a blind newest-tail
-        # slice -- so a slow turn can't scroll its own trigger (or a crossing reply, or a
-        # memory-mode gap) out of view. Floor keeps the old minimum; cap bounds mega-bursts.
         allm = board.messages(0)
-        idx = next((i for i, x in enumerate(allm) if x["id"] >= anchor_id), max(len(allm) - 1, 0))
-        window = allm[max(0, idx - 3):]
-        floor = 4 if sid else 12
-        if len(window) < floor:
-            window = allm[-floor:]
-        window = window[-60:]
+        if sid and mem_upto is not None:
+            # Minimal headful injection: feed ONLY what the session hasn't ingested, OLDEST first,
+            # capped -- a >60 backlog drains across successive turns instead of silently skipping
+            # its middle, and a stateless interlude (memory toggled off/on) never opens a hole
+            # because stateless turns don't advance this watermark.
+            window = [x for x in allm if x["id"] > mem_upto][:60]
+        elif sid:
+            # Genuinely new session (no persisted watermark anywhere): one orienting catch-up slice.
+            window = allm[-30:]
+        else:
+            # Stateless (no memory): a fresh brain holds nothing, so ANCHOR the window at the oldest
+            # unanswered trigger (never a blind newest-tail slice) so a slow turn can't scroll its
+            # own trigger out of view. Floor keeps a recent-context minimum (env-tunable); cap bounds
+            # mega-bursts.
+            idx = next((i for i, x in enumerate(allm) if x["id"] >= anchor_id), max(len(allm) - 1, 0))
+            window = allm[max(0, idx - 3):]
+            try:
+                floor = int(os.environ.get("FLEETCHAT_CTX_BUDGET", "12"))
+            except ValueError:
+                floor = 12          # a garbage env value must not crash every engage
+            if len(window) < floor:
+                window = allm[-floor:]
+            window = window[-60:]
         text = "\n".join((x["sender"] + ": " + x["text"]) for x in window)
         stop = threading.Event()
 
@@ -337,11 +373,16 @@ def main(name):
         board.set_typing(cfg["id"], True)      # animated … in the UI while the model thinks
         threading.Thread(target=_keep_typing, daemon=True).start()
         try:
-            reply = claude_reply(cfg, persona, text, session_id=sid, state=mem_state)
+            reply, ok = claude_reply(cfg, persona, text, session_id=sid, state=mem_state)
         finally:
             stop.set()
             board.set_typing(cfg["id"], False)
         last_reply = time.time()  # cool down after EVERY engage (even a PASS) so a burst
+        if sid and ok and window:
+            # advance ONLY past what the session truly ingested (last id actually injected --
+            # not the watch high-water): a failed turn or a >60 overflow stays in front of the
+            # watermark and is re-fed next turn. Persisted on the next loop write.
+            mem_upto = window[-1]["id"]
         if reply:                 # can't rapid-fire claude / flicker the typing …
             post_with_retry(reply)
 
@@ -357,10 +398,10 @@ def main(name):
                     line = respond_demo(cfg, persona, m)
                     if line:
                         board.post(cfg["id"], line)
-            try:
-                seenf.write_text(json.dumps({"last": last}), encoding="utf-8")
-            except Exception:
-                pass
+            # pending un-engaged: park the pointer just below the oldest trigger so a mid-engage
+            # crash re-sees it. Deliberate trade: a crash AFTER the reply posts but BEFORE the next
+            # write can re-answer that trigger once on restart -- a duplicate over a silent loss.
+            save_seen((pending[0]["id"] - 1) if pending else last)
             if LIVE and pending:
                 # ONE collapsed turn answers everything that queued during the previous engage:
                 # deferred, never dropped -- and a burst still costs one claude call, not N.
