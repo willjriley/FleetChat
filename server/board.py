@@ -830,6 +830,14 @@ class Handler(BaseHTTPRequestHandler):
             reviewer = str(data.get("reviewer", "")).strip()
             if reviewer and not re.fullmatch(r"[a-z0-9_-]{1,64}", reviewer):
                 return self._send_json({"error": "bad reviewer name"}, 400)
+            if reviewer and reviewer not in {a["id"] for a in read_roster()}:
+                # Shape-valid is not value-safe: "all" passes the charset/length check above just
+                # like any real agent id would, but "@all card ... moved to review" would broadcast
+                # to the entire crew through THIS field -- a separate vector from the title one
+                # safe_title neutralizes below. Requiring actual roster membership closes that (no
+                # reserved word to enumerate/miss) and, as a side effect, means a hand-off can never
+                # tag a dead name nobody will ever see.
+                return self._send_json({"error": "reviewer must be a current crew member"}, 400)
             tid = str(data.get("id", ""))
             entering_review = bool(reviewer) and op == "status" and str(data.get("lane", "")) == "review"
             was_review = False
