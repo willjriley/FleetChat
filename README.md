@@ -57,7 +57,7 @@ Two small controls keep a live crew focused instead of noisy:
 
 A live crew is easier to follow when you can *hear* it, so FleetChat can speak each agent's replies aloud — two ways, both optional:
 
-- **Browser voices (default, zero-setup).** The web page speaks replies with the browser's built-in speech synthesis — nothing to install. Each agent gets a stable voice, and the **🔊 / 🔇** toggle (or the `/mute` · `/unmute` commands) silences them. *(Type `/` in the message box for the full command palette — `/clear`, `/mute`, `/unmute`, `/shutdown`, `/help`.)*
+- **Browser voices (default, zero-setup).** The web page speaks replies with the browser's built-in speech synthesis — nothing to install. Each agent gets a stable voice, and the **🔊 / 🔇** toggle (or the `/mute` · `/unmute` commands) silences them. *(Type `/` in the message box for the full command palette — `/clear`, `/mute`, `/unmute`, `/restart`, `/shutdown`, `/help`.)*
 - **High-quality server voices (opt-in).** For far nicer, natural voices, install the open [kokoro](https://github.com/thewh1teagle/kokoro-onnx) neural TTS once and let the *server* do the speaking:
 
   ```

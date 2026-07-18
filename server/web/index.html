@@ -411,6 +411,7 @@
     {cmd:"/clear",    desc:"Clear the board history (for everyone)"},
     {cmd:"/mute",     desc:"Mute agent voices"},
     {cmd:"/unmute",   desc:"Unmute agent voices"},
+    {cmd:"/restart",  desc:"Restart the server and the whole crew (flushes stuck agents)"},
     {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
     {cmd:"/help",     desc:"Show these commands"}
   ];
@@ -446,9 +447,19 @@
     if(text==="/clear"){ doClear(); return true; }
     if(text==="/mute"){ setMuted(true); $("#text").value=""; renderChips(); return true; }
     if(text==="/unmute"){ setMuted(false); $("#text").value=""; renderChips(); return true; }
+    if(text==="/restart"){ $("#text").value=""; renderChips(); restartServer(); return true; }
     if(text==="/shutdown"){ $("#text").value=""; renderChips(); shutdownServer(); return true; }
     if(text==="/help"){ showCommands(); return true; }
     return false;
+  }
+  function restartServer(){
+    if(!confirm("Restart the server and relaunch the whole crew? (flushes stuck agents; history is kept)")) return;
+    fetch("/control/restart",{method:"POST",headers:headers()}).then(function(r){
+      if(r.status===401){ askToken(); return; }
+      if(r.status===404){ alert("Restart needs the server started with --control."); return; }
+      // the board goes down for a few seconds; the header shows offline and the page
+      // reconnects on its own once the supervisor brings the stack back
+    }).catch(function(){});
   }
   function doClear(){
     if(!confirm("Clear the board history for everyone? This can't be undone.")) return;

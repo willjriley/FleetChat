@@ -347,12 +347,23 @@ def main():
 
     print("[run] the crew is live -- watching the board. Ctrl-C to stop.")
 
+    restart = False
     try:
-        procs[0].wait()  # wait on the board; Ctrl-C tears the whole crew down
+        rc = procs[0].wait()  # wait on the board; Ctrl-C tears the whole crew down
+        restart = (rc == 42)  # /restart: the board asks this supervisor for a full clean relaunch
     except KeyboardInterrupt:
         print("\n[run] stopping the crew ...")
     finally:
         cleanup()
+    if restart:
+        # Relaunch the WHOLE stack fresh (board + saved lineup) -- flushes any runaway agent
+        # processes. Always --keep: a /restart must never wipe the board history.
+        print("[run] /restart requested -- relaunching the whole stack ...")
+        time.sleep(1.5)  # let the port free up
+        args = [a for a in sys.argv if a != "--demo"]  # a restart restores the real lineup
+        if "--keep" not in args:
+            args.insert(1, "--keep")
+        os.execv(PY, [PY] + args)
     return 0
 
 
