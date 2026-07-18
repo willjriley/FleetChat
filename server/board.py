@@ -393,8 +393,14 @@ def thread_op(op, data):
             if t.get("owner") == agent:
                 t["heartbeat"] = now
             t["updated"] = now
+        elif op == "edit":
+            if title:                                          # reuses the validated/capped title
+                t["title"] = title
+            if data.get("desc") is not None:
+                t["desc"] = str(data.get("desc", ""))[:1000].strip()
+            t["updated"] = now
         elif op == "close":
-            t.update(status="done", updated=now)
+            t.update(status="done", updated=now, closed=now)   # closed = the durable done-date
             s = str(data.get("summary", ""))[:500].strip()
             if s:
                 t["summary"] = s

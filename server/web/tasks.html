@@ -65,6 +65,9 @@
     d.style.background="hsl("+hue(s)+" 55% 45%)"; d.textContent=(s[0]||"?").toUpperCase(); d.title=s; return d; }
   function tage(ts){ var s=(Date.now()/1000-ts); if(s<90)return "now"; if(s<3600)return Math.round(s/60)+"m";
     if(s<86400)return Math.round(s/3600)+"h"; return Math.round(s/86400)+"d"; }
+  function fdate(ts){ var d=new Date(ts*1000); return (d.getMonth()+1)+"/"+d.getDate()+" "+
+    ("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2); }
+  var DONE_SHOW_SECS=48*3600;   // done cards stay VISIBLE for 48h, then live on in the ledger unseen
   function me(){ var n=(localStorage.getItem("fleetchat_name")||"").trim().toLowerCase().replace(/[^a-z0-9_-]/g,""); return n||"operator"; }
   function op(body){
     fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify(body)})
@@ -76,22 +79,39 @@
     LANES.forEach(function(L){
       var col=document.createElement("div"); col.className="col";
       var items=cache.filter(function(t){ return t.status===L[0]; });
+      var hidden=0;
+      if(L[0]==="done"){   // age out of VIEW after 48h -- the ledger still holds them (search comes later)
+        var cutoff=Date.now()/1000-DONE_SHOW_SECS, all=items;
+        items=all.filter(function(t){ return (t.closed||t.updated||0)>=cutoff; });
+        hidden=all.length-items.length;
+      }
       var h=document.createElement("h2"); var hl=document.createElement("span"); hl.textContent=L[1]; h.appendChild(hl);
-      var n=document.createElement("span"); n.className="n"; n.textContent=items.length; h.appendChild(n); col.appendChild(h);
+      var n=document.createElement("span"); n.className="n"; n.textContent=items.length+(hidden?"+"+hidden:""); h.appendChild(n); col.appendChild(h);
       var wrap=document.createElement("div"); wrap.className="cards";
+      if(hidden){ var hnote=document.createElement("div"); hnote.className="empty";
+        hnote.textContent=hidden+" older done card"+(hidden>1?"s":"")+" held in the ledger (not shown)"; wrap.appendChild(hnote); }
       if(!items.length){ var e=document.createElement("div"); e.className="empty"; e.textContent="—"; wrap.appendChild(e); }
       items.forEach(function(t){
         var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
         var tt=document.createElement("div"); tt.className="t"; tt.textContent=t.title; c.appendChild(tt);
+        if(t.desc){ var dd=document.createElement("div"); dd.className="sum"; dd.style.fontStyle="normal"; dd.textContent=t.desc; c.appendChild(dd); }
         var meta=document.createElement("div"); meta.className="meta";
         if(t.owner){ meta.appendChild(av(t.owner)); var w=document.createElement("span"); w.className="who"; w.textContent=t.owner; meta.appendChild(w); }
         (t.assignees||[]).forEach(function(a){ if(a!==t.owner) meta.appendChild(av(a)); });
-        var age=document.createElement("span"); age.className="age"; age.textContent=t.id+" · "+tage(t.updated); meta.appendChild(age);
+        var age=document.createElement("span"); age.className="age";
+        age.textContent=t.id+(t.status==="done" ? " · done "+fdate(t.closed||t.updated) : " · "+tage(t.updated));
+        age.title="created "+fdate(t.created)+(t.closed ? " · closed "+fdate(t.closed) : "");   // exact dates on hover
+        meta.appendChild(age);
         c.appendChild(meta);
         if(t.summary){ var s=document.createElement("div"); s.className="sum"; s.textContent=t.summary; c.appendChild(s); }
         if(t.status!=="done"){
           var b=document.createElement("div"); b.className="btns";
           var btn=function(label,fn){ var x=document.createElement("button"); x.textContent=label; x.addEventListener("click",fn); b.appendChild(x); };
+          btn("✎", function(){
+            var nt=prompt("Title:", t.title); if(nt===null) return;
+            var nd=prompt("Description (optional):", t.desc||""); if(nd===null) nd=t.desc||"";
+            op({op:"edit", id:t.id, title:nt, desc:nd});
+          });
           if(t.status==="backlog") btn("→ Open", function(){ op({op:"status", id:t.id, lane:"open"}); });
           if(t.status==="open"){ btn("Claim", function(){ op({op:"claim", id:t.id, agent:me()}); });
                                  btn("→ Backlog", function(){ op({op:"status", id:t.id, lane:"backlog"}); }); }
