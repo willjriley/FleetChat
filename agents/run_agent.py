@@ -33,7 +33,7 @@ from fleetchat import Board  # noqa: E402
 
 LIVE = os.environ.get("FLEETCHAT_LIVE") == "1"
 CLAUDE = os.environ.get("FLEETCHAT_CLAUDE", "claude")
-MODEL = os.environ.get("FLEETCHAT_MODEL", "")
+MODEL_DEFAULT = os.environ.get("FLEETCHAT_MODEL", "")  # env fallback when no per-agent override is set
 COOLDOWN = 3.0
 REPLY_TIMEOUT = float(os.environ.get("FLEETCHAT_REPLY_TIMEOUT", "600"))
 
@@ -128,6 +128,22 @@ def in_memory_mode(name):
     return False
 
 
+def agent_model(name):
+    """Which CLI model THIS agent's next turn should use. Read FRESH each engage -- same live,
+    no-restart pattern as in_memory_mode -- so a Settings-page edit takes effect on the agent's
+    VERY NEXT turn. Precedence: a per-agent override in data/settings.json's "model" map, then
+    FLEETCHAT_MODEL, then "" (the claude CLI's own current default -- no --model flag added)."""
+    sf = REPO / "data" / "settings.json"
+    if sf.is_file():
+        try:
+            m = json.loads(sf.read_text(encoding="utf-8")).get("model")
+        except Exception:
+            m = None
+        if isinstance(m, dict) and m.get(name):
+            return str(m[name])
+    return MODEL_DEFAULT
+
+
 def addressed(name, text):
     # The @ is REQUIRED: bare prose that happens to contain an agent name ("i hope so", "max effort") must not route -- with everyday-word
     # agent names, optional-@ both mis-engaged agents and suppressed the lead fallback.
@@ -213,8 +229,9 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
     base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
     if FOLDER:
         base += ["--add-dir", FOLDER]
-    if MODEL:
-        base += ["--model", MODEL]
+    model = agent_model(cfg["id"])   # fresh read -- a Settings-page edit takes effect next turn
+    if model:
+        base += ["--model", model]
 
     fail = {}
 

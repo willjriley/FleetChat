@@ -276,7 +276,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false, serverSeen = 0, ttsKnown = false, speakingSet = {};
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false, serverSeen = 0, ttsKnown = false, speakingSet = {}, voiceMode = "auto";
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -323,6 +323,11 @@
       .replace(/[*#_>|]/g,"").replace(/\s+/g," ").trim().slice(0,400);
   }
   function speak(sender, text){
+    // "server-only" mode (Settings) is a HARD stop: this install always has the real engine, so
+    // the browser fallback goes permanently inert -- no heartbeat timing, no boot race, no theme
+    // desync, no process-supervision gap can ever matter, because this code path never runs at
+    // all. Silence during a genuine speaker outage is the trade; never a wrong voice.
+    if(voiceMode==="server-only") return;
     // Browser TTS is the FALLBACK: it stays silent until the server state is KNOWN (no boot race),
     // and for 45s after the server speaker was last seen -- so a heartbeat missed mid-playback can
     // never flip a stray robo-voice in while the server is still working a queue.
@@ -498,7 +503,8 @@
   function loadTtsState(){
     // if a server-side speaker is live, the browser TTS stands down (no double up)
     fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
-      .then(function(j){ if(j){ ttsKnown=true; serverTts=!!j.server; if(serverTts) serverSeen=Date.now(); } }).catch(function(){});
+      .then(function(j){ if(j){ ttsKnown=true; serverTts=!!j.server; if(serverTts) serverSeen=Date.now();
+        if(j.mode) voiceMode=j.mode; } }).catch(function(){});
   }
   function loadMemory(){
     // fetch the current per-agent memory flags so the book icons render lit/dim correctly
@@ -1144,7 +1150,7 @@
     // Appearance — the theme picker (the only interactive control here).
     body.appendChild(section("Appearance", themePicker()));
 
-    body.appendChild(el("div","set-note","Settings are view-only for now."));
+    body.appendChild(el("div","set-note","Appearance, each agent's CLI model, and the voice fallback are editable; the rest is view-only for now."));
 
     backdrop.appendChild(modal);
     backdrop.addEventListener("click", function(e){ if(e.target===backdrop) close(); });
@@ -1160,8 +1166,9 @@
 
     var rosP=fetch("/roster",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
     var memP=fetch("/control/memory",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-    Promise.all([rosP,memP]).then(function(res){
-      var roster=(res[0]&&res[0].roster)||[], mem=(res[1]&&res[1].memory)||null;
+    var mdlP=fetch("/control/model",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    Promise.all([rosP,memP,mdlP]).then(function(res){
+      var roster=(res[0]&&res[0].roster)||[], mem=(res[1]&&res[1].memory)||null, mdl=(res[2]&&res[2].model)||{};
       crewBox.innerHTML="";
       if(!roster.length){ crewBox.appendChild(el("div","set-note","No crew on the board.")); return; }
       roster.forEach(function(a){
@@ -1172,6 +1179,26 @@
           var on=!!mem[a.id];
           r.appendChild(el("span","set-badge"+(on?" on":""), on?"memory on":"memory off"));
         }
+        if(controlOn){
+          // The CLI parameter this agent's NEXT turn uses -- blank = the claude CLI's own current
+          // default (no --model flag added). Written live to settings.json; the runner re-reads it
+          // fresh every engage, so this takes effect on the agent's very next turn, no restart.
+          var inp=el("input","set-model-inp"); inp.type="text"; inp.placeholder="default";
+          inp.value=mdl[a.id]||""; inp.title="CLI --model override for "+ (a.name||a.id) +" (blank = CLI default)";
+          var save=function(){
+            fetch("/control/model",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),
+              body:JSON.stringify({agent:a.id, model:inp.value.trim()})})
+              .then(function(r){ return r.json(); })
+              .then(function(j){ if(j&&j.error){ inp.title=j.error; inp.classList.add("err"); }
+                                  else { inp.classList.remove("err"); inp.title="CLI --model override for "+(a.name||a.id); } })
+              .catch(function(){});
+          };
+          inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); inp.blur(); } });
+          inp.addEventListener("blur", save);
+          r.appendChild(inp);
+        } else if(mdl[a.id]) {
+          r.appendChild(el("span","set-badge on", "model: "+mdl[a.id]));
+        }
         crewBox.appendChild(r);
       });
     });
@@ -1180,6 +1207,21 @@
       if(j){
         voiceBox.appendChild(row("Voices", j.muted?"muted":"on"));
         voiceBox.appendChild(row("Server speaker", j.server?"live":"not detected"));
+        var frow=el("div","set-row"); frow.appendChild(el("span","k","Browser fallback"));
+        if(controlOn){
+          var sel=el("select","voicemode-sel");
+          [["auto","Auto (fallback to browser voices)"],["server-only","Server only (never fall back)"]]
+            .forEach(function(o){ var op=el("option",null,o[1]); op.value=o[0]; if((j.mode||"auto")===o[0]) op.selected=true; sel.appendChild(op); });
+          sel.addEventListener("change", function(){
+            fetch("/control/tts",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),
+              body:JSON.stringify({mode:sel.value})}).then(function(r){ return r.json(); })
+              .then(function(res){ if(res && res.mode) voiceMode=res.mode; }).catch(function(){});
+          });
+          frow.appendChild(sel);
+        } else {
+          frow.appendChild(el("span","v", (j.mode||"auto")==="server-only" ? "server only" : "auto"));
+        }
+        voiceBox.appendChild(frow);
       } else {
         voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on"));
       }
