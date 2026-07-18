@@ -276,13 +276,18 @@ def cli_template_read():
 
 def cli_template_write(agent, tokens):
     """Set (or, given an empty list, clear) one agent's CLI template. Validates: a list of
-    strings, {prompt} present somewhere (so the agent can never be silently muted), each
-    token charset/length-bounded. Returns (result_map, error) -- error is None on success."""
+    strings, {prompt} present as its OWN token (so the agent can never be silently muted),
+    each token charset/length-bounded. Returns (result_map, error) -- error is None on success."""
     if tokens:
         if not (isinstance(tokens, list) and all(isinstance(x, str) for x in tokens)):
             return None, "template must be a list of strings (one argv token each)"
-        if not any("{prompt}" in x for x in tokens):
-            return None, "template must include a {prompt} token somewhere"
+        if "{prompt}" not in tokens:
+            # Substitution (run_agent.py) is an EXACT-token dict lookup, never a substring
+            # replace -- a token like "-p={prompt}" is not the key "{prompt}", so it would
+            # survive substitution unchanged and the real prompt would never reach the agent.
+            # This check has to require the same exactness the substitution actually uses,
+            # or "validated" and "will actually substitute" silently diverge.
+            return None, "template must include {prompt} as its own token (not glued to another flag)"
         for x in tokens:
             if not CLI_TEMPLATE_TOKEN_RE.match(x):
                 return None, "a token is empty, over 4096 chars, or has a control character"
