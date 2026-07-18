@@ -22,6 +22,7 @@
   header h1{font-size:17px;margin:0;letter-spacing:.3px}
   header .dot{width:9px;height:9px;border-radius:50%;background:#c0392b;transition:background .3s}
   header .dot.ok{background:#2e9e5b}
+  header .conn{color:#c0392b;font-size:12px;margin-left:8px;opacity:.85}
   header .scope{margin-left:auto;font-size:12px;color:var(--muted)}
   header .ctl{margin-left:12px;font:inherit;font-size:12px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:7px;padding:3px 11px;cursor:pointer}
   header .ctl:hover{border-color:#c0392b;color:#c0392b}
@@ -104,6 +105,7 @@
 <header>
   <span class="dot" id="dot"></span>
   <h1>FleetChat</h1>
+  <span class="conn" id="conn"></span>
   <span class="scope" id="scope"></span>
   <button id="mute" class="ctl" title="Agent voices on/off">🔊</button>
   <button id="shutdown" class="ctl" style="display:none" title="Stop the server and the whole crew">Shut down</button>
@@ -477,14 +479,14 @@
   function poll(){
     fetch("/messages?since="+lastId, {headers:headers()}).then(function(r){
       if(r.status===401){ askToken(); return null; }
-      dot.classList.add("ok"); return r.json();
+      dot.classList.add("ok"); setConn(true); return r.json();
     }).then(function(data){
       if(!data) return;
       var incoming=data.messages||[];
       incoming.forEach(function(m){ add(m); if(m.id>lastId) lastId=m.id; });
       if(incoming.length) renderAgents();   // rebuild only on change, so the typing … animation isn't reset every poll
       updateAllPolls(); speakReady = true;
-    }).catch(function(){ dot.classList.remove("ok"); });
+    }).catch(function(){ dot.classList.remove("ok"); setConn(false); });
   }
 
   function askToken(){
@@ -604,9 +606,13 @@
       serverStopped();
     }).catch(serverStopped);  // the server dies mid-response -- that's expected
   }
+  function setConn(online){
+    var c=$("#conn"); if(c) c.textContent = online ? "" : "offline — restart with the launcher or python run.py";
+  }
   function serverStopped(){
-    dot.classList.remove("ok"); clearInterval(pollTimer);
-    msgs.innerHTML='<div class="empty">Server shut down. Restart with the launcher or python run.py.</div>';
+    // Server went away (explicit Shut Down or a crash): show it on the header status line, NOT by
+    // clobbering the chat, and keep polling so the page reconnects on its own once it's back up.
+    dot.classList.remove("ok"); setConn(false);
     var sb=$("#shutdown"); if(sb) sb.style.display="none";
   }
   var pollTimer=setInterval(poll, 2000);

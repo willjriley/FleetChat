@@ -34,6 +34,7 @@ LIVE = os.environ.get("FLEETCHAT_LIVE") == "1"
 CLAUDE = os.environ.get("FLEETCHAT_CLAUDE", "claude")
 MODEL = os.environ.get("FLEETCHAT_MODEL", "")
 COOLDOWN = 3.0
+REPLY_TIMEOUT = float(os.environ.get("FLEETCHAT_REPLY_TIMEOUT", "600"))
 
 # --------------------------------------------------------------------------- #
 # Memory mode -- an opt-in, per-agent dial that is OFF by default.            #
@@ -178,11 +179,17 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
     if MODEL:
         base += ["--model", MODEL]
 
+    fail = {}
+
     def _run(extra):
         try:
             return subprocess.run(base + extra, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=150)
-        except Exception:
+                                  encoding="utf-8", errors="replace", timeout=REPLY_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            fail["why"] = "TIMEOUT after %ds" % REPLY_TIMEOUT
+            return None
+        except Exception as e:
+            fail["why"] = "FAILED to launch claude (%s)" % type(e).__name__
             return None
 
     if session_id:
@@ -196,7 +203,10 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
         res = _run([])                             # default: stateless, no memory
 
     if res is None or res.returncode != 0:
-        return None
+        # dead-man's-switch: never end a turn in silence -- post a terminal status instead
+        why = fail.get("why") or ("FAILED (exit %s)" % (res.returncode if res is not None else "?"))
+        err = ((res.stderr or "").strip()[-300:]) if res is not None else ""
+        return ("⚠ headless turn %s -- task NOT completed." % why) + ((" stderr tail: `%s`" % err) if err else "")
     out = (res.stdout or "").strip()
     if not out or out.upper().rstrip(".!") == "PASS":
         return None
