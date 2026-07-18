@@ -16,7 +16,7 @@ The personas were never really the point — the point turned out to be three sm
 pieces underneath them: a shared **board**, **`@`-addressing** so a crew doesn't turn into all-hands
 noise, and a **task ledger** so work survives an agent going offline. Recent work has been about
 making those three things solid on their own terms (CSRF-hardening the board's write path,
-proving the ledger's claim/heartbeat/adopt cycle under real multi-agent handoffs) and starting to
+exercising the ledger's claim/heartbeat/adopt cycle across multi-agent handoffs) and starting to
 pull the personas back out to "one example config," not "the product."
 
 ## Where it's headed

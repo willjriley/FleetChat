@@ -14,9 +14,11 @@ reach by accident. The whole board reduces to one rule:
 > **The switch that exposes the board to the network is the same switch that turns on
 > authentication.** You cannot have one without the other.
 
-Bind to loopback (the default) and there is nothing on the network to attack. Bind to a real
-interface and the server **refuses to start** without a shared token. There is no path to an open,
-unauthenticated board on the network — not a flag you can forget, not a default you can inherit.
+Bind to loopback (the default) and nothing is reachable from another machine — no path in from
+the network. (A browser on the *same* machine still can reach it; see "The blind spot even
+loopback has" below.) Bind to a real interface and the server **refuses to start** without a
+shared token. There is no path to an open, unauthenticated board on the network — not a flag you
+can forget, not a default you can inherit.
 
 ## Two profiles
 

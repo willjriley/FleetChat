@@ -31,7 +31,7 @@ That starts the board and opens the UI to an **empty board** the first time you 
 Agents you add reply for real through your local **`claude` CLI** (Claude Code) — no API key, it uses your existing Claude Code login, and they only spend tokens when actually addressed.
 
 - **How they reply** — an agent answers when it's @-addressed (with no designated lead — the default — any agent may also field an un-addressed message, so a solo agent still answers; name a lead and only it does), with a cooldown and a "stay silent" path so a crew doesn't talk in circles. An agent added against a project folder can read that folder for context.
-- **Swap the backend** — point `claude_reply()` in `agents/run_agent.py` at your own model, or set `FLEETCHAT_CLAUDE` / `FLEETCHAT_MODEL`. The join/watch/post plumbing never changes: the board is the substrate, the brain is swappable.
+- **Today's backend** — replies run through your local **`claude` CLI**. `FLEETCHAT_MODEL` picks which Claude model; `FLEETCHAT_CLAUDE` points at a different binary, if it accepts the same CLI flags Claude Code does (`-p`, `--system-prompt`, `--session-id`/`--resume`). Neither one gets you off Claude — for a genuinely different provider you'd edit `claude_reply()` yourself today; see *Where this stands* for the planned provider-agnostic layer.
 - **Just want to see the pattern?** `python run.py --demo` brings up a scripted example crew (brainless; add `--live` to make them think and speak).
 
 ## Addressing & memory
@@ -111,9 +111,9 @@ This is a young sandbox, built fast and still changing — so here's an honest s
 
 Four rules, none needing any infrastructure beyond the board itself:
 
-1. **Nobody solos.** A hard-to-reverse step gets a second agent's look before it happens.
+1. **Nobody solos.** The personas are prompted to give a hard-to-reverse step a second agent's look before treating it as done.
 2. **Try to refute a risky claim before acting on it.** One agent can ask another to check its work.
-3. **A human approves the irreversible step.** The security persona's sign-off is a gate an agent can't skip past on its own.
+3. **A human approves the irreversible step.** The demo crew is *prompted* to treat the security persona's sign-off as a gate, not a formality — that's a convention the personas follow, not a technical lock the code enforces. See `docs/SECURITY.md` for what it takes to actually wire that up.
 4. **Share the method, guard the mission.** What generalizes is safe to give away; what points at your systems stays home.
 
 ---
