@@ -89,13 +89,14 @@
   function op(body){
     fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(j){ if(j&&j.error) alert(j.error); load(); })
-      .catch(function(){});
+      .catch(function(){ alert("couldn't reach the server -- try again"); });
   }
   // One reusable modal for BOTH create and edit -- replaces the old prompt() calls.
   // openTaskDialog({id,title,desc,onSave}); onSave({title,desc}) fires on Save. Closes on
   // Escape, Cancel, or a backdrop (outside-the-box) click. No id => "New task" heading.
   function openTaskDialog(opts){
     opts=opts||{};
+    var prevFocus=document.activeElement;   // restore here on close -- otherwise focus drops to <body>
     var back=document.createElement("div"); back.className="modal-back";
     var box=document.createElement("div"); box.className="modal";
     box.setAttribute("role","dialog"); box.setAttribute("aria-modal","true");
@@ -108,14 +109,31 @@
     var cancel=document.createElement("button"); cancel.type="button"; cancel.className="cancel"; cancel.textContent="Cancel";
     var save=document.createElement("button"); save.type="button"; save.className="save"; save.textContent="Save";
     row.appendChild(cancel); row.appendChild(save); box.appendChild(row); back.appendChild(box);
-    function close(){ document.removeEventListener("keydown", onKey); if(back.parentNode) back.parentNode.removeChild(back); }
+    var trapped=[ti,de,cancel,save];   // tab order inside the dialog -- also the trap cycle below
+    function close(){
+      document.removeEventListener("keydown", onKey);
+      if(back.parentNode) back.parentNode.removeChild(back);
+      if(prevFocus && typeof prevFocus.focus==="function") prevFocus.focus();   // e.g. back to the ✎/+New task button
+    }
     function submit(){
       var title=ti.value.trim(); if(!title){ ti.focus(); return; }   // title required, mirrors the old prompt (empty => no-op)
       close();
       if(opts.onSave) opts.onSave({title:title, desc:de.value.trim()});
     }
-    function onKey(e){ if(e.key==="Escape"){ e.preventDefault(); close(); }
-      else if(e.key==="Enter" && (e.metaKey||e.ctrlKey)){ e.preventDefault(); submit(); } }
+    function onKey(e){
+      if(e.key==="Escape"){ e.preventDefault(); close(); }
+      else if(e.key==="Enter" && (e.metaKey||e.ctrlKey)){ e.preventDefault(); submit(); }
+      else if(e.key==="Tab"){
+        // aria-modal="true" claims this traps focus -- make that true, not just an AT hint:
+        // without this, Tab walks straight past Save/Cancel into whatever's behind the backdrop
+        // (e.g. another card's ✎ button), which can stack a second dialog on top of this one.
+        var i=trapped.indexOf(document.activeElement);
+        if(i===-1) return;   // focus is somehow outside the dialog already -- don't fight it
+        e.preventDefault();
+        var next=e.shiftKey ? (i<=0?trapped.length-1:i-1) : (i>=trapped.length-1?0:i+1);
+        trapped[next].focus();
+      }
+    }
     cancel.addEventListener("click", close);
     save.addEventListener("click", submit);
     back.addEventListener("click", function(e){ if(e.target===back) close(); });   // click on the backdrop, not the box
@@ -129,8 +147,11 @@
     fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({op:"create", title:title, by:me()})})
       .then(function(r){ return r.json(); })
       .then(function(j){ if(j&&j.error){ alert(j.error); load(); return; }
+        // The description is a second request (the server's create op stores only the title) --
+        // op() now surfaces both a {error} response AND a network failure here, so a dropped
+        // description is never silent: the card exists, but the user finds out if the follow-up didn't land.
         if(desc && j && j.thread && j.thread.id) op({op:"edit", id:j.thread.id, desc:desc}); else load(); })
-      .catch(function(){});
+      .catch(function(){ alert("couldn't reach the server -- the task wasn't created, try again"); });
   }
   function render(){
     var root=$("#board"); root.innerHTML="";
