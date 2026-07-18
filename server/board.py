@@ -822,9 +822,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "unauthorized"}, 401)
             data = self._read_json() or {}
             op = str(data.get("op", ""))
+            # Optional review hand-off: a status->review move may name a reviewer. Validate its
+            # shape up front (same rule as the other agent-name fields here) so a bad value is a
+            # 400, never a silently-dropped field. thread_op has no board handle, so the assign +
+            # chat-tag that turn "review" from a lane into a request live here in the handler.
+            reviewer = str(data.get("reviewer", "")).strip()
+            if reviewer and not re.fullmatch(r"[a-z0-9_-]+", reviewer):
+                return self._send_json({"error": "bad reviewer name"}, 400)
             result, err, code = thread_op(op, data)
             if err:
                 return self._send_json({"error": err}, code)
+            if reviewer and op == "status" and str(data.get("lane", "")) == "review":
+                # Reuse the assign op (dedups) so the reviewer lands in assignees, then tag them
+                # on the board -- so moving a card to review actually requests a pass, not just
+                # relabels a lane. No reviewer given => neither happens (backward compatible).
+                assigned, _aerr, _acode = thread_op("assign", {"id": data.get("id", ""), "agent": reviewer})
+                if assigned is not None:
+                    result = assigned   # response now reflects the reviewer landing in assignees
+                self.board.post("board",
+                                "@%s card %s ('%s') moved to review -- your pass requested."
+                                % (reviewer, result.get("id", ""), result.get("title", "")),
+                                tags=["review-handoff"])
             return self._send_json({"ok": True, "thread": result}, code)
         if route.path == "/control/memory":
             if not self.control:
