@@ -11,7 +11,7 @@ agent watches the board and, when it is @-addressed by name (or, for the lead, w
 posts with no @), it runs the recent conversation through `claude -p` with its PERSONA.md as
 the system prompt and posts the reply. Guardrails keep a crew of these from talking in circles:
   - it never replies to itself,
-  - a 3-second per-agent cooldown,
+  - a per-agent cooldown that DEFERS (never drops) whatever lands mid-turn,
   - it only engages when @-named (the lead also fields un-addressed human messages),
   - the model is told to answer with a bare "PASS" when it has nothing worth adding.
 
@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -128,7 +129,9 @@ def in_memory_mode(name):
 
 
 def addressed(name, text):
-    return re.search(r"(^|[\s(@])@?" + re.escape(name) + r"\b", text or "", re.I) is not None
+    # The @ is REQUIRED: bare prose that happens to contain an agent name ("i hope so", "max effort") must not route -- with everyday-word
+    # agent names, optional-@ both mis-engaged agents and suppressed the lead fallback.
+    return re.search(r"(^|[\s(])@" + re.escape(name) + r"\b", text or "", re.I) is not None
 
 
 def should_engage(cfg, msg, ids, is_lead):
@@ -252,43 +255,121 @@ def main(name):
     # -> every agent may field an open message: a solo agent just answers (never a silent board), and
     # the PASS reply + per-agent cooldown keep a larger crew from piling on.
     lead = os.environ.get("FLEETCHAT_LEAD")
+    if not lead:  # honor a designated lead on the REAL board too (was effectively --demo-only)
+        lf = REPO / "fleet.local.json"
+        if lf.is_file():
+            try:
+                lead = (json.loads(lf.read_text(encoding="utf-8")) or {}).get("lead")
+            except Exception:
+                lead = None
     is_lead = (cfg["id"] == lead) if lead else True
     board = Board()
     intro = cfg.get("intro", cfg["name"] + " on the board.")
     joined = board.post(cfg["id"], intro + ("  (live)" if LIVE else ""), tags=["join"])
     print("[%s] joined%s." % (cfg["id"], " (live)" if LIVE else ""))
 
-    # Start from the moment we joined -- a fresh responder answers NEW messages; it must NOT
-    # replay (and re-run claude on) the whole board history at every startup. That backlog churn
-    # is what pinned the typing … on every agent for minutes after a restart.
+    # Resume from the last message this agent actually SAW (persisted pointer) so a restart
+    # doesn't silently skip everything posted while the stack was down. The deferred-engage
+    # queue below collapses any backlog into ONE turn, so resuming can't churn claude calls.
+    # A huge gap (>100 msgs) falls back to the join point -- that's a fresh start, not a restart.
     last = int(joined.get("id", 0)) if isinstance(joined, dict) else 0
+    seenf = REPO / "data" / ("seen-%s.json" % cfg["id"])
+    if seenf.is_file():
+        try:
+            stored = int((json.loads(seenf.read_text(encoding="utf-8")) or {}).get("last", 0))
+            if stored and 0 <= last - stored <= 100:
+                last = stored
+        except Exception:
+            pass
+
     misses = 0
     last_reply = 0.0
     mem_state = {}  # per-agent, persists for this process's life: tracks its memory session
+    pending = []    # engage-worthy messages DEFERRED (never dropped) while the cooldown runs
+
+    def post_with_retry(text, attempts=3):
+        """A finished reply must never die at the final step: retry transient post failures,
+        then spool to data/outbox-<agent>.txt as the last resort (drained next cycle)."""
+        for i in range(attempts):
+            try:
+                return board.post(cfg["id"], text)
+            except Exception:
+                time.sleep(2 * (i + 1))
+        try:
+            with open(REPO / "data" / ("outbox-%s.txt" % cfg["id"]), "a", encoding="utf-8") as f:
+                f.write(text + "\n---\n")
+        except Exception:
+            pass
+        return None
+
+    def drain_outbox():
+        f = REPO / "data" / ("outbox-%s.txt" % cfg["id"])
+        if f.is_file():
+            try:
+                body = f.read_text(encoding="utf-8").strip()
+                if body:  # post FIRST, unlink only on success -- the recovery path must not itself eat the reply
+                    board.post(cfg["id"], "(recovered reply -- original post failed)\n" + body[-4000:])
+                f.unlink()
+            except Exception:
+                pass
+
+    def engage(anchor_id):
+        nonlocal last_reply
+        # memory mode is read FRESH here, so a toggle takes effect on the next engage
+        sid = agent_session_id(cfg["id"]) if in_memory_mode(cfg["id"]) else None
+        # Context is ANCHORED at the oldest unanswered trigger -- never a blind newest-tail
+        # slice -- so a slow turn can't scroll its own trigger (or a crossing reply, or a
+        # memory-mode gap) out of view. Floor keeps the old minimum; cap bounds mega-bursts.
+        allm = board.messages(0)
+        idx = next((i for i, x in enumerate(allm) if x["id"] >= anchor_id), max(len(allm) - 1, 0))
+        window = allm[max(0, idx - 3):]
+        floor = 4 if sid else 12
+        if len(window) < floor:
+            window = allm[-floor:]
+        window = window[-60:]
+        text = "\n".join((x["sender"] + ": " + x["text"]) for x in window)
+        stop = threading.Event()
+
+        def _keep_typing():  # typing TTL is 180s server-side; a turn may legally run far longer
+            while not stop.wait(60):
+                board.set_typing(cfg["id"], True)
+
+        board.set_typing(cfg["id"], True)      # animated … in the UI while the model thinks
+        threading.Thread(target=_keep_typing, daemon=True).start()
+        try:
+            reply = claude_reply(cfg, persona, text, session_id=sid, state=mem_state)
+        finally:
+            stop.set()
+            board.set_typing(cfg["id"], False)
+        last_reply = time.time()  # cool down after EVERY engage (even a PASS) so a burst
+        if reply:                 # can't rapid-fire claude / flicker the typing …
+            post_with_retry(reply)
+
     while True:  # re-arm forever; re-arming the watcher is how the agent stays responsive
         try:
+            drain_outbox()
             for m in board.watch(since=last, timeout=30):
                 last = max(last, m["id"])
                 if LIVE:
-                    if should_engage(cfg, m, ids, is_lead) and (time.time() - last_reply) >= COOLDOWN:
-                        # memory mode is read FRESH here, so a toggle takes effect on the next msg
-                        sid = agent_session_id(cfg["id"]) if in_memory_mode(cfg["id"]) else None
-                        # in memory mode the session already holds the history -> pass less fresh
-                        # context, so a remembering session isn't re-stuffed with its own tail
-                        ctx = board.messages(0)[-(4 if sid else 12):]
-                        text = "\n".join((x["sender"] + ": " + x["text"]) for x in ctx)
-                        board.set_typing(cfg["id"], True)      # animated … in the UI while the model thinks
-                        try:
-                            reply = claude_reply(cfg, persona, text, session_id=sid, state=mem_state)
-                        finally:
-                            board.set_typing(cfg["id"], False)
-                        last_reply = time.time()   # cool down after EVERY engage (even a PASS) so a
-                        if reply:                  # burst can't rapid-fire claude / flicker the typing …
-                            board.post(cfg["id"], reply)
+                    if should_engage(cfg, m, ids, is_lead):
+                        pending.append(m)   # DEFER -- the cooldown gate moved below, out of the drop path
                 else:
                     line = respond_demo(cfg, persona, m)
                     if line:
                         board.post(cfg["id"], line)
+            try:
+                seenf.write_text(json.dumps({"last": last}), encoding="utf-8")
+            except Exception:
+                pass
+            if LIVE and pending:
+                # ONE collapsed turn answers everything that queued during the previous engage:
+                # deferred, never dropped -- and a burst still costs one claude call, not N.
+                gap = COOLDOWN - (time.time() - last_reply)
+                if gap > 0:
+                    time.sleep(gap)
+                anchor_id = pending[0]["id"]
+                engage(anchor_id)
+                pending = []  # cleared only AFTER a completed engage; a thrown engage retries next cycle
             misses = 0  # a clean watch cycle means the board is alive
         except KeyboardInterrupt:
             break
