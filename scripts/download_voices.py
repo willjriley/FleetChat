@@ -18,6 +18,7 @@ speaker alongside the board:
 
 Idempotent: re-running skips the engine if importable and any weight already downloaded.
 """
+import hashlib
 import subprocess
 import sys
 import urllib.request
@@ -26,10 +27,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEST = REPO / "data" / "voices"
 
-# kokoro-onnx v1.0 model weights (Apache-2.0). Same files the kokoro-onnx project ships.
+# Pinned for supply-chain reproducibility: an exact engine version + the SHA256 of each weight,
+# verified against the official kokoro-onnx v1.0 release (Apache-2.0; byte sizes 325532387 / 28214398).
+# A hash mismatch ABORTS rather than handing an unverified ~353MB binary to the model loader -- so a
+# tampered mirror, MITM, or truncated download can never be loaded.
+ENGINE_PIN = "kokoro-onnx==0.5.0"
+_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 FILES = {
-    "kokoro-v1.0.onnx": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
-    "voices-v1.0.bin":  "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+    "kokoro-v1.0.onnx": (_BASE + "/kokoro-v1.0.onnx",
+                         "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5"),
+    "voices-v1.0.bin":  (_BASE + "/voices-v1.0.bin",
+                         "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"),
 }
 
 
@@ -44,19 +52,31 @@ def ensure_engine():
         pass
     print("[voices] installing the kokoro-onnx engine (+ soundfile) -- this pulls onnxruntime, may take a minute ...")
     try:
-        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "kokoro-onnx", "soundfile"], check=True)
-        print("[voices]   engine installed.")
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", ENGINE_PIN, "soundfile"], check=True)
+        print("[voices]   engine installed (%s)." % ENGINE_PIN)
         return True
     except Exception as e:
         print("[voices]   pip install failed (%s)." % e)
-        print("[voices]   install it yourself:  %s -m pip install kokoro-onnx soundfile" % sys.executable)
+        print("[voices]   install it yourself:  %s -m pip install %s soundfile" % (sys.executable, ENGINE_PIN))
         return False
 
 
-def download(name, url, dest):
+def sha256_of(path):
+    """Streaming SHA256 so a 310MB weight is never read wholly into memory."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(name, url, expected_sha, dest):
     if dest.exists() and dest.stat().st_size > 1_000_000:
-        print("[voices]   %s already present (%d MB) -- skipping." % (name, dest.stat().st_size // (1024 * 1024)))
-        return
+        if sha256_of(dest) == expected_sha:
+            print("[voices]   %s already present + SHA256-verified -- skipping." % name)
+            return
+        print("[voices]   %s present but SHA256 mismatch -- re-downloading." % name)
+        dest.unlink()
     tmp = dest.with_name(dest.name + ".part")
     with urllib.request.urlopen(url, timeout=60) as r:
         total = int(r.headers.get("Content-Length", 0))
@@ -73,20 +93,25 @@ def download(name, url, dest):
                     sys.stdout.write("\r[voices]   %s  %3d%%  (%d / %d MB)" %
                                      (name, pct, got // (1024 * 1024), total // (1024 * 1024)))
                     sys.stdout.flush()
+    actual = sha256_of(tmp)
+    if actual != expected_sha:
+        tmp.unlink()   # never keep an unverified weight
+        raise ValueError("SHA256 mismatch for %s -- got %s, expected %s. File refused." %
+                         (name, actual, expected_sha))
     tmp.replace(dest)
-    print("\r[voices]   %s done (%d MB).                    " % (name, dest.stat().st_size // (1024 * 1024)))
+    print("\r[voices]   %s done + SHA256-verified (%d MB).            " % (name, dest.stat().st_size // (1024 * 1024)))
 
 
 def main():
     DEST.mkdir(parents=True, exist_ok=True)
     engine_ok = ensure_engine()
     print("[voices] fetching model weights into %s ..." % DEST)
-    for name, url in FILES.items():
+    for name, (url, sha) in FILES.items():
         try:
-            download(name, url, DEST / name)
+            download(name, url, sha, DEST / name)
         except Exception as e:
-            print("\n[voices]   FAILED to download %s: %s" % (name, e))
-            print("[voices]   check your connection and re-run; partial files (*.part) are safe to delete.")
+            print("\n[voices]   FAILED for %s: %s" % (name, e))
+            print("[voices]   re-run to retry; partial files (*.part) are safe to delete.")
             return 1
     print("[voices] done -- high-quality voices are installed.")
     if not engine_ok:
