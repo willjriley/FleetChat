@@ -271,6 +271,119 @@ def voices_write(agent, voice):
     DATA.mkdir(parents=True, exist_ok=True)
     VOICES_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return data
+# Thread ledger -- the task board behind the Kanban view (data/threads.json,   #
+# git-ignored). Every actionable task is a card: who opened it, who OWNS it    #
+# (the claim = the soft lock against double-dispatch), who else is assigned,   #
+# which lane it's in, and a liveness heartbeat so a dead owner's claim visibly #
+# expires and the card becomes adoptable. Per-agent identity lives here, so    #
+# the endpoints ride the AUTHED view only -- the public poll never changes.    #
+# --------------------------------------------------------------------------- #
+THREADS_FILE = DATA / "threads.json"
+THREADS_LOCK = threading.Lock()
+THREAD_LANES = ("open", "claimed", "review", "done")
+THREADS_CAP = 400          # sanity bound; oldest done cards are pruned past this
+THREAD_HEARTBEAT_TTL = 300  # a claim with no heartbeat for 5 min reads as stale/adoptable
+
+
+def _threads_read():
+    if THREADS_FILE.is_file():
+        try:
+            d = json.loads(THREADS_FILE.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and isinstance(d.get("threads"), list):
+                return d
+        except Exception:
+            pass
+    return {"next": 1, "threads": []}
+
+
+def _threads_write(d):
+    DATA.mkdir(parents=True, exist_ok=True)
+    THREADS_FILE.write_text(json.dumps(d, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def threads_list():
+    """All cards, oldest first, each annotated with a computed 'stale' flag (claimed but no
+    heartbeat inside the TTL) so the UI can amber a dying claim without its own clock math."""
+    with THREADS_LOCK:
+        d = _threads_read()
+    now = time.time()
+    for t in d["threads"]:
+        t["stale"] = bool(t.get("status") == "claimed" and now - t.get("heartbeat", 0) > THREAD_HEARTBEAT_TTL)
+    return d["threads"]
+
+
+def thread_op(op, data):
+    """One serialized mutation on the ledger. Returns (result, error, http_status).
+    Ops: create{title, by} · claim{id, agent} (also adopts a stale claim) · release{id, agent}
+    · assign/unassign{id, agent} · status{id, lane} · heartbeat{id, agent} · close{id, summary?}."""
+    title = str(data.get("title", ""))[:200].strip()
+    agent = (data.get("agent") or data.get("by") or "").strip()
+    tid = str(data.get("id", ""))
+    if agent and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", agent):
+        return None, "bad agent name", 400
+    with THREADS_LOCK:
+        d = _threads_read()
+        if op == "create":
+            if not title:
+                return None, "a title is required", 400
+            card = {"id": "t%d" % d["next"], "title": title, "opened_by": agent or "?",
+                    "owner": None, "assignees": [], "status": "open", "heartbeat": 0,
+                    "created": time.time(), "updated": time.time(), "summary": ""}
+            d["next"] += 1
+            d["threads"].append(card)
+            if len(d["threads"]) > THREADS_CAP:  # prune oldest DONE cards first, never live ones
+                done = [t for t in d["threads"] if t.get("status") == "done"]
+                for old in done[:len(d["threads"]) - THREADS_CAP]:
+                    d["threads"].remove(old)
+            _threads_write(d)
+            return card, None, 201
+        t = next((x for x in d["threads"] if x.get("id") == tid), None)
+        if t is None:
+            return None, "no such thread", 404
+        now = time.time()
+        if op == "claim":
+            if not agent:
+                return None, "an agent is required", 400
+            fresh = t.get("owner") and t.get("status") == "claimed" and now - t.get("heartbeat", 0) <= THREAD_HEARTBEAT_TTL
+            if fresh and t["owner"] != agent:
+                return None, "already claimed by %s (heartbeat fresh)" % t["owner"], 409
+            adopted = bool(t.get("owner")) and t["owner"] != agent
+            t.update(owner=agent, status="claimed", heartbeat=now, updated=now)
+            t["adopted_from"] = t.get("owner") if adopted else t.pop("adopted_from", None)
+        elif op == "release":
+            if t.get("owner") == agent or not t.get("owner"):
+                t.update(owner=None, status="open", updated=now)
+            else:
+                return None, "only the owner releases a live claim", 403
+        elif op == "assign":
+            if agent and agent not in t["assignees"]:
+                t["assignees"].append(agent)
+            t["updated"] = now
+        elif op == "unassign":
+            if agent in t.get("assignees", []):
+                t["assignees"].remove(agent)
+            t["updated"] = now
+        elif op == "status":
+            lane = str(data.get("lane", ""))
+            if lane not in THREAD_LANES:
+                return None, "lane must be one of %s" % (THREAD_LANES,), 400
+            t["status"] = lane
+            if lane == "open":
+                t["owner"] = None
+            t["updated"] = now
+        elif op == "heartbeat":
+            if t.get("owner") == agent:
+                t["heartbeat"] = now
+            t["updated"] = now
+        elif op == "close":
+            t.update(status="done", updated=now)
+            s = str(data.get("summary", ""))[:500].strip()
+            if s:
+                t["summary"] = s
+        else:
+            return None, "unknown op", 400
+        _threads_write(d)
+        return t, None, 200
 
 
 # --------------------------------------------------------------------------- #
@@ -514,6 +627,11 @@ class Handler(BaseHTTPRequestHandler):
                                     "speaking": self.board.speaking_now()})
         if route.path == "/roster":
             return self._send_json({"roster": read_roster()})
+        if route.path == "/threads":
+            # the task ledger: owners/assignees are per-agent identity -> authed view only
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"threads": threads_list()})
         if route.path == "/control/memory":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -587,6 +705,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "unauthorized"}, 401)
             self.board.clear()
             return self._send_json({"ok": True, "cleared": True})
+        if route.path == "/threads":
+            # ledger mutations: same gates as the other state-changing controls
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            op = str(data.get("op", ""))
+            result, err, code = thread_op(op, data)
+            if err:
+                return self._send_json({"error": err}, code)
+            return self._send_json({"ok": True, "thread": result}, code)
         if route.path == "/control/memory":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
