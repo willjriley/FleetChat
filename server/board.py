@@ -293,12 +293,22 @@ def _threads_read():
                 return d
         except Exception:
             pass
+        # Corrupt/truncated ledger: QUARANTINE it (never silently treat it as empty -- the next
+        # write would permanently overwrite every card). The bad file stays recoverable on disk.
+        try:
+            THREADS_FILE.replace(THREADS_FILE.with_name("threads.json.bad-%d" % int(time.time())))
+        except Exception:
+            pass
     return {"next": 1, "threads": []}
 
 
 def _threads_write(d):
     DATA.mkdir(parents=True, exist_ok=True)
-    THREADS_FILE.write_text(json.dumps(d, indent=1, ensure_ascii=False), encoding="utf-8")
+    # Atomic: write a temp file, then os.replace -- a crash mid-write leaves either the whole old
+    # file or the whole new one, never a truncated ledger.
+    tmp = THREADS_FILE.with_name("threads.json.tmp")
+    tmp.write_text(json.dumps(d, indent=1, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, THREADS_FILE)
 
 
 def threads_list():
@@ -347,16 +357,20 @@ def thread_op(op, data):
             fresh = t.get("owner") and t.get("status") == "claimed" and now - t.get("heartbeat", 0) <= THREAD_HEARTBEAT_TTL
             if fresh and t["owner"] != agent:
                 return None, "already claimed by %s (heartbeat fresh)" % t["owner"], 409
-            adopted = bool(t.get("owner")) and t["owner"] != agent
+            prev = t.get("owner")                       # capture BEFORE the update overwrites it
+            adopted = bool(prev) and prev != agent
             t.update(owner=agent, status="claimed", heartbeat=now, updated=now)
-            t["adopted_from"] = t.get("owner") if adopted else t.pop("adopted_from", None)
+            if adopted:
+                t["adopted_from"] = prev                # provenance: whose stale claim this adopts
+            else:
+                t.pop("adopted_from", None)
         elif op == "release":
             if t.get("owner") == agent or not t.get("owner"):
                 t.update(owner=None, status="open", updated=now)
             else:
                 return None, "only the owner releases a live claim", 403
         elif op == "assign":
-            if agent and agent not in t["assignees"]:
+            if agent and agent not in t.setdefault("assignees", []):
                 t["assignees"].append(agent)
             t["updated"] = now
         elif op == "unassign":
@@ -367,8 +381,12 @@ def thread_op(op, data):
             lane = str(data.get("lane", ""))
             if lane not in THREAD_LANES:
                 return None, "lane must be one of %s" % (THREAD_LANES,), 400
+            if lane == "claimed":
+                if not t.get("owner"):
+                    return None, "claim it instead -- 'claimed' needs an owner", 400
+                t["heartbeat"] = now       # moving back to working counts as life; never instantly stale
             t["status"] = lane
-            if lane == "open":
+            if lane in ("open", "backlog"):
                 t["owner"] = None
             t["updated"] = now
         elif op == "heartbeat":

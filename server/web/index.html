@@ -269,7 +269,7 @@
   </section>
   <aside class="kanban" id="kanban">
     <h2>Task board</h2>
-    <button class="kadd" id="kadd">+ New task</button>
+    <button class="kadd" id="kadd" style="display:none">+ New task</button>
     <div id="lanes"></div>
   </aside>
 </main>
@@ -945,7 +945,7 @@
   fetch("/health").then(function(r){return r.json();}).then(function(h){
     scope.textContent=h.version||"";
     controlOn = !!h.control;
-    if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } loadMemory(); }
+    if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } var kb=$("#kadd"); if(kb) kb.style.display=""; loadMemory(); }
     loadRoster();
   }).catch(function(){});
   function shutdownServer(){
