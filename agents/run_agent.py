@@ -297,7 +297,7 @@ def main(name):
                 time.sleep(2 * (i + 1))
         try:
             with open(REPO / "data" / ("outbox-%s.txt" % cfg["id"]), "a", encoding="utf-8") as f:
-                f.write(text + "\n---\n")
+                f.write(redact(text) + "\n---\n")   # redact-before-write: runner output never hits disk raw
         except Exception:
             pass
         return None
