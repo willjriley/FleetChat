@@ -280,7 +280,7 @@ def voices_write(agent, voice):
 # --------------------------------------------------------------------------- #
 THREADS_FILE = DATA / "threads.json"
 THREADS_LOCK = threading.Lock()
-THREAD_LANES = ("open", "claimed", "review", "done")
+THREAD_LANES = ("backlog", "open", "claimed", "review", "done")
 THREADS_CAP = 400          # sanity bound; oldest done cards are pruned past this
 THREAD_HEARTBEAT_TTL = 300  # a claim with no heartbeat for 5 min reads as stale/adoptable
 
@@ -605,6 +605,8 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path)
         if route.path in ("/", "/index.html"):
             return self._serve_ui()
+        if route.path == "/tasks":
+            return self._serve_ui(WEB / "tasks.html")   # the full-page task board (data stays authed)
         if route.path == "/health":
             return self._send_json({"ok": True, "version": self.server_version, "control": self.control})
         if route.path == "/messages":
@@ -878,8 +880,8 @@ class Handler(BaseHTTPRequestHandler):
         msg = self.board.post(sender, text, data.get("tags"))
         return self._send_json(msg, 201)
 
-    def _serve_ui(self):
-        index = WEB / "index.html"
+    def _serve_ui(self, page=None):
+        index = page or (WEB / "index.html")
         if not index.exists():
             return self._send_json({"error": "UI not found"}, 404)
         body = index.read_bytes()

@@ -246,7 +246,8 @@
   <h1>FleetChat</h1>
   <span class="conn" id="conn"></span>
   <span class="scope" id="scope"></span>
-  <button id="tasksbtn" class="ctl" title="Task board">📋 Tasks</button>
+  <button id="tasksbtn" class="ctl" title="Open the full task board (new tab)">📋 Tasks</button>
+  <button id="minibtn" class="ctl" title="Quick-glance task panel">▤</button>
   <button id="mute" class="ctl" title="Agent voices on/off">🔊</button>
   <button id="settings" class="ctl" title="Settings">⚙</button>
   <button id="shutdown" class="ctl" style="display:none" title="Stop the server and the whole crew">Shut down</button>
@@ -984,10 +985,17 @@
     LANES.forEach(function(L){
       var lane=document.createElement("div"); lane.className="lane";
       var items=threadsCache.filter(function(t){ return t.status===L[0]; });
+      var total=items.length;
+      if(L[0]==="done") items=items.slice(-3);   // the glance panel shows only the 3 freshest done; the full board holds the rest
       var lt=document.createElement("div"); lt.className="lt";
       var lb=document.createElement("span"); lb.textContent=L[1]; lt.appendChild(lb);
-      var n=document.createElement("span"); n.className="n"; n.textContent=items.length; lt.appendChild(n);
+      var n=document.createElement("span"); n.className="n"; n.textContent=total; lt.appendChild(n);
       lane.appendChild(lt);
+      if(L[0]==="done" && total>items.length){
+        var more=document.createElement("a"); more.className="kempty"; more.href="/tasks"; more.target="_blank";
+        more.style.display="block"; more.style.color="var(--accent)"; more.textContent=(total-items.length)+" more → full board";
+        lane.appendChild(more);
+      }
       if(!items.length){ var e=document.createElement("div"); e.className="kempty"; e.textContent="—"; lane.appendChild(e); }
       items.forEach(function(t){
         var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
@@ -1018,7 +1026,10 @@
       .then(function(j){ if(j&&j.threads){ threadsCache=j.threads; renderKanban(); } })
       .catch(function(){});
   }
-  (function(){ var tb=$("#tasksbtn"); if(tb) tb.addEventListener("click", kanbanToggle);
+  (function(){
+    // 📋 opens the FULL board in its own tab (real estate); ▤ toggles the compact glance panel.
+    var tb=$("#tasksbtn"); if(tb) tb.addEventListener("click", function(){ window.open("/tasks","_blank"); });
+    var mb=$("#minibtn"); if(mb) mb.addEventListener("click", kanbanToggle);
     var ka=$("#kadd"); if(ka) ka.addEventListener("click", function(){
       var title=prompt("Task title:"); if(!title) return;
       top({op:"create", title:title, by:meName()});
