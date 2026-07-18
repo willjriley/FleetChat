@@ -193,6 +193,7 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
     `state` is a tiny per-agent dict this uses to remember -- across calls, and across a PASS reply
     -- that the session now exists; if a prior process already created it, a create->resume fallback
     recovers. With no session_id it is the plain, stateless default: a fresh brain, no memory."""
+    board_url = os.environ.get("FLEETCHAT_URL", "http://127.0.0.1:8137").rstrip("/")
     prompt = ("You are in a live team chat. Recent messages:\n\n" + context +
               "\n\n---\nYou are " + cfg["name"] + " (" + cfg.get("role", "") + "). Reply IN CHARACTER, "
               "warmly and briefly (1-3 sentences), IF: you're addressed by name, OR your lane is "
@@ -202,7 +203,11 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
               "say you'll check or defer to the lead rather than "
               "guessing. And NEVER claim work is done or delivered without naming its receipt -- a "
               "message id, PR number, file path, or command output; if you have no receipt, say so "
-              "plainly. But if another member is clearly better placed and "
+              "plainly. The crew shares a TASK BOARD at " + board_url + "/threads : GET lists cards; "
+              "POST json ops manage them -- create{title,by} claim{id,agent} status{id,lane} "
+              "close{id,summary} (lanes: backlog open claimed review done; claim=the work lock). "
+              "When asked to make, take, update, or finish a task, use it via your tools and cite "
+              "the card id as your receipt. But if another member is clearly better placed and "
               "you'd just be echoing, reply with exactly: PASS and nothing else. Don't all pile on -- "
               "one or two good replies beat five.")
     base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
