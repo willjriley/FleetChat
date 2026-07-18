@@ -115,7 +115,95 @@
   button.send{font:inherit;font-weight:600;color:#fff;background:var(--accent);border:0;border-radius:9px;padding:0 18px;cursor:pointer}
   button.send:disabled{opacity:.5;cursor:default}
   .empty{color:var(--muted);text-align:center;margin-top:40px}
+
+  /* ============================================================
+     ADDED: theme palettes + settings modal + restrained chat polish.
+     Self-contained block, appended at the end of the stylesheet so it
+     doesn't collide with concurrent rendering-CSS edits above.
+     ============================================================ */
+
+  /* --- Theme palettes. A data-theme attribute on <html> overrides the
+         :root vars. "System" = no attribute -> falls back to the media
+         query above. Each palette (re)defines EVERY themable var. --- */
+  html[data-theme="light"]{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --muted:#6b7480;
+    --line:#e5e8ec; --accent:#3b6ea5; --chip:#eef1f5; --codebg:#f4f6f8;
+    --t-str:#0a7d33; --t-com:#8a8f98; --t-num:#b5720a; --t-kw:#8250df;
+  }
+  html[data-theme="dark"]{
+    --bg:#0f1216; --panel:#171b21; --ink:#e8ebef; --muted:#8b95a1;
+    --line:#252b33; --accent:#6ea8e0; --chip:#222831; --codebg:#12161c;
+    --t-str:#7ee787; --t-com:#8b949e; --t-num:#f0b072; --t-kw:#d2a8ff;
+  }
+  html[data-theme="dusk"]{   /* soft indigo twilight -- warm, dark-ish */
+    --bg:#191725; --panel:#221f31; --ink:#e8e5f2; --muted:#9992b0;
+    --line:#332f45; --accent:#9a84e0; --chip:#2b2740; --codebg:#151320;
+    --t-str:#8fd8a0; --t-com:#867e9e; --t-num:#eeb079; --t-kw:#c6a6ff;
+  }
+  html[data-theme="sepia"]{  /* warm paper reading mode -- light-ish */
+    --bg:#f2e8d5; --panel:#faf3e4; --ink:#3a3026; --muted:#8a7a63;
+    --line:#e0d3ba; --accent:#9c6b3f; --chip:#eaddc7; --codebg:#efe5d2;
+    --t-str:#5c7a2f; --t-com:#a08b6f; --t-num:#a5642a; --t-kw:#8a5a86;
+  }
+  html[data-theme="harbor"]{ /* cool slate + teal */
+    --bg:#0e1a1f; --panel:#152329; --ink:#dfeaed; --muted:#8098a0;
+    --line:#213139; --accent:#2f9d92; --chip:#1b2c33; --codebg:#0c161a;
+    --t-str:#6fd6b0; --t-com:#7d939b; --t-num:#e0b57a; --t-kw:#79b8e0;
+  }
+
+  /* --- Restrained chat polish (CSS only; no layout/class changes) --- */
+  body{transition:background-color .25s ease, color .25s ease}
+  header, .side, form, input, textarea, .modal{transition:background-color .25s ease, color .25s ease, border-color .25s ease}
+  .msg{padding:6px 10px; border-radius:10px; transition:background-color .15s ease}
+  .msg:hover{background-color:color-mix(in srgb, var(--accent) 7%, transparent)}
+  /* faint scroll-edge shadows on the feed (reveal only when it overflows) */
+  .msgs{
+    background:
+      linear-gradient(var(--bg) 30%, rgba(0,0,0,0)) 0 0 / 100% 22px no-repeat local,
+      linear-gradient(rgba(0,0,0,0), var(--bg) 70%) 0 100% / 100% 22px no-repeat local,
+      radial-gradient(farthest-side at 50% 0, rgba(0,0,0,.14), rgba(0,0,0,0)) 0 0 / 100% 9px no-repeat scroll,
+      radial-gradient(farthest-side at 50% 100%, rgba(0,0,0,.14), rgba(0,0,0,0)) 0 100% / 100% 9px no-repeat scroll;
+  }
+  input:focus, textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent)}
+  button.send:focus-visible, .ctl:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+  /* --- Settings modal --- */
+  .modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px; opacity:0; transition:opacity .18s ease}
+  .modal-backdrop.show{opacity:1}
+  .modal{background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:14px; box-shadow:0 18px 60px rgba(0,0,0,.35); width:100%; max-width:520px; max-height:85vh; overflow-y:auto; transform:translateY(8px); transition:transform .18s ease}
+  .modal-backdrop.show .modal{transform:none}
+  .modal-head{display:flex; align-items:center; gap:10px; padding:15px 18px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel); z-index:1}
+  .modal-head h2{margin:0; font-size:16px; font-weight:600; letter-spacing:.2px}
+  .modal-head .x{margin-left:auto; border:0; background:transparent; color:var(--muted); font-size:22px; line-height:1; cursor:pointer; padding:2px 8px; border-radius:7px}
+  .modal-head .x:hover{background:var(--chip); color:var(--ink)}
+  .modal-body{padding:6px 18px 20px}
+  .set-sec{margin-top:18px}
+  .set-sec h3{font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 8px}
+  .set-row{display:flex; align-items:baseline; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); font-size:13px}
+  .set-row:last-child{border-bottom:0}
+  .set-row .k{color:var(--muted); flex:none; min-width:120px}
+  .set-row .v{color:var(--ink); word-break:break-word}
+  .set-crew{display:flex; align-items:center; gap:9px; padding:7px 0; border-bottom:1px solid var(--line)}
+  .set-crew:last-child{border-bottom:0}
+  .set-crew .nm{font-weight:600; font-size:13px; flex:none}
+  .set-crew .rl{color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .set-badge{font-size:11px; border-radius:20px; padding:1px 10px; background:var(--chip); color:var(--muted); flex:none}
+  .set-crew .set-badge{margin-left:auto}
+  .set-badge.on{background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--ink)}
+  .set-note{margin-top:16px; font-size:12px; color:var(--muted); font-style:italic}
+  /* Appearance: theme swatch buttons (bg preview + accent dot) */
+  .theme-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 1fr)); gap:9px}
+  .theme-sw{border:1px solid var(--line); border-radius:11px; padding:8px; cursor:pointer; background:var(--panel); color:var(--ink); text-align:left; font:inherit; font-size:12px; display:flex; flex-direction:column; gap:7px; transition:border-color .15s ease, box-shadow .15s ease}
+  .theme-sw:hover{border-color:var(--accent)}
+  .theme-sw.sel{border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent)}
+  .theme-sw .sw-prev{height:32px; border-radius:7px; border:1px solid rgba(127,127,127,.28); display:flex; align-items:flex-end; justify-content:flex-end; padding:5px}
+  .theme-sw .sw-dot{width:13px; height:13px; border-radius:50%; box-shadow:0 0 0 1px rgba(255,255,255,.4)}
+  .theme-sw .sw-name{font-weight:600}
 </style>
+<script>
+  // Apply the saved theme before first paint so there's no flash of the default palette.
+  try{ var _ft=localStorage.getItem("fleetchat_theme"); if(_ft && _ft!=="system") document.documentElement.setAttribute("data-theme", _ft); }catch(_e){}
+</script>
 </head>
 <body>
 <header>
@@ -124,6 +212,7 @@
   <span class="conn" id="conn"></span>
   <span class="scope" id="scope"></span>
   <button id="mute" class="ctl" title="Agent voices on/off">🔊</button>
+  <button id="settings" class="ctl" title="Settings">⚙</button>
   <button id="shutdown" class="ctl" style="display:none" title="Stop the server and the whole crew">Shut down</button>
 </header>
 <main>
@@ -695,6 +784,143 @@
   var rosterTimer=setInterval(loadRoster, 4000);   // catch + Add agent / x edits to the lineup
   var ttsTimer=setInterval(loadTtsState, 5000);    // browser TTS auto-stands-down when a server speaker is live
   poll(); loadTyping(); loadTtsState();
+})();
+</script>
+<script>
+// ============================================================
+// ADDED: Settings screen (view-only) + theme picker.
+// Self-contained IIFE — adds no globals, only READS existing
+// endpoints (/health, /roster, /control/memory, /control/tts).
+// ============================================================
+(function(){
+  "use strict";
+  var THEME_KEY="fleetchat_theme", TOKEN_KEY="fleetchat_token", MUTE_KEY="fleetchat_muted";
+  // Swatch preview colors (bg + accent) — kept in step with the CSS palettes above.
+  var THEMES=[
+    {id:"system", name:"System", auto:true},
+    {id:"light",  name:"Light",  bg:"#f6f7f9", accent:"#3b6ea5"},
+    {id:"dark",   name:"Dark",   bg:"#0f1216", accent:"#6ea8e0"},
+    {id:"dusk",   name:"Dusk",   bg:"#191725", accent:"#9a84e0"},
+    {id:"sepia",  name:"Sepia",  bg:"#f2e8d5", accent:"#9c6b3f"},
+    {id:"harbor", name:"Harbor", bg:"#0e1a1f", accent:"#2f9d92"}
+  ];
+  function ls(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+  function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+  function hdrs(){ var h={}, t=ls(TOKEN_KEY); if(t) h["X-Fleet-Token"]=t; return h; }
+  function getTheme(){ return ls(THEME_KEY)||"system"; }
+  function applyTheme(id){
+    if(!id||id==="system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", id);
+    lsSet(THEME_KEY, id||"system");
+  }
+  applyTheme(getTheme());   // keep the live attribute in step with storage (head script did the pre-paint apply)
+
+  function el(tag,cls,txt){ var d=document.createElement(tag); if(cls) d.className=cls; if(txt!=null) d.textContent=txt; return d; }
+  function row(k,v){ var r=el("div","set-row"); r.appendChild(el("span","k",k)); r.appendChild(el("span","v",v==null?"—":String(v))); return r; }
+  function section(title,node){ var s=el("div","set-sec"); s.appendChild(el("h3",null,title)); if(node) s.appendChild(node); return s; }
+
+  var backdrop=null;
+  function onKey(e){ if(e.key==="Escape"){ e.preventDefault(); close(); } }
+  function close(){
+    if(!backdrop) return;
+    var b=backdrop; backdrop=null; b.classList.remove("show");
+    document.removeEventListener("keydown", onKey);
+    setTimeout(function(){ if(b&&b.parentNode) b.parentNode.removeChild(b); }, 200);
+  }
+
+  function themePicker(){
+    var grid=el("div","theme-grid"), cur=getTheme();
+    THEMES.forEach(function(t){
+      var b=el("button","theme-sw"+(t.id===cur?" sel":"")); b.type="button"; b.title=t.name;
+      var prev=el("div","sw-prev");
+      prev.style.background = t.auto ? "linear-gradient(135deg,#f6f7f9 0 50%,#0f1216 50% 100%)" : t.bg;
+      var dot=el("span","sw-dot"); dot.style.background = t.auto ? "#6ea8e0" : t.accent; prev.appendChild(dot);
+      b.appendChild(prev); b.appendChild(el("span","sw-name", t.name));
+      b.addEventListener("click", function(){
+        applyTheme(t.id);
+        grid.querySelectorAll(".theme-sw").forEach(function(x){ x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      grid.appendChild(b);
+    });
+    return grid;
+  }
+
+  function open(){
+    if(backdrop) return;
+    backdrop=el("div","modal-backdrop");
+    var modal=el("div","modal");
+    var head=el("div","modal-head"); head.appendChild(el("h2",null,"Settings"));
+    var x=el("button","x","×"); x.title="Close"; x.addEventListener("click", close); head.appendChild(x);
+    modal.appendChild(head);
+    var body=el("div","modal-body"); modal.appendChild(body);
+
+    // Board — origin/port are local; version/control come from /health.
+    var vVer=el("span","v","…"), vCtl=el("span","v","…");
+    var board=section("Board");
+    var rVer=el("div","set-row"); rVer.appendChild(el("span","k","Version")); rVer.appendChild(vVer); board.appendChild(rVer);
+    var rCtl=el("div","set-row"); rCtl.appendChild(el("span","k","Control")); rCtl.appendChild(vCtl); board.appendChild(rCtl);
+    board.appendChild(row("Origin", location.origin));
+    board.appendChild(row("Port", location.port || (location.protocol==="https:"?"443":"80")));
+    body.appendChild(board);
+
+    // Crew — /roster (+ a /control/memory badge when that endpoint is readable).
+    var crewBox=el("div"); crewBox.appendChild(el("div","set-note","loading…"));
+    body.appendChild(section("Crew", crewBox));
+
+    // Voice — /control/tts (falls back to the local mute flag when gated).
+    var voiceBox=el("div");
+    body.appendChild(section("Voice", voiceBox));
+
+    // Appearance — the theme picker (the only interactive control here).
+    body.appendChild(section("Appearance", themePicker()));
+
+    body.appendChild(el("div","set-note","Settings are view-only for now."));
+
+    backdrop.appendChild(modal);
+    backdrop.addEventListener("click", function(e){ if(e.target===backdrop) close(); });
+    document.body.appendChild(backdrop);
+    document.addEventListener("keydown", onKey);
+    requestAnimationFrame(function(){ if(backdrop) backdrop.classList.add("show"); });
+
+    // ---- live reads (graceful: on 401/404/error a row shows "—" or is skipped) ----
+    fetch("/health",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(h){
+      vVer.textContent = (h&&h.version!=null) ? String(h.version) : "—";
+      vCtl.textContent = (h&&h.control!=null) ? (h.control?"on":"off") : "—";
+    }).catch(function(){ vVer.textContent="—"; vCtl.textContent="—"; });
+
+    var rosP=fetch("/roster",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    var memP=fetch("/control/memory",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    Promise.all([rosP,memP]).then(function(res){
+      var roster=(res[0]&&res[0].roster)||[], mem=(res[1]&&res[1].memory)||null;
+      crewBox.innerHTML="";
+      if(!roster.length){ crewBox.appendChild(el("div","set-note","No crew on the board.")); return; }
+      roster.forEach(function(a){
+        var r=el("div","set-crew");
+        r.appendChild(el("span","nm", a.name||a.id));
+        r.appendChild(el("span","rl", a.role||""));
+        if(mem && Object.prototype.hasOwnProperty.call(mem, a.id)){
+          var on=!!mem[a.id];
+          r.appendChild(el("span","set-badge"+(on?" on":""), on?"memory on":"memory off"));
+        }
+        crewBox.appendChild(r);
+      });
+    });
+
+    fetch("/control/tts",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(j){
+      if(j){
+        voiceBox.appendChild(row("Voices", j.muted?"muted":"on"));
+        voiceBox.appendChild(row("Server speaker", j.server?"live":"not detected"));
+      } else {
+        voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on"));
+      }
+    }).catch(function(){
+      voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on"));
+    });
+  }
+
+  function wire(){ var btn=document.getElementById("settings"); if(btn) btn.addEventListener("click", open); }
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", wire); else wire();
 })();
 </script>
 </body>
