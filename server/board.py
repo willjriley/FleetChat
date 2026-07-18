@@ -154,11 +154,22 @@ def roster_remove(name):
     write_roster_list([i for i in read_roster_list() if i.get("name") != name])
 
 
+CREW_LOCK = threading.Lock()   # serializes read-modify-write of run.pids across add/kick/respawn
+
+
 def kill_pid(pid):
+    """Stop a crew member AND its process tree. An in-flight model call is a CHILD of the
+    watcher -- killing only the watcher orphans that call for up to the full reply timeout.
+    Windows: verify the pid still belongs to python.exe (pid-recycling guard), then /T the
+    whole tree. POSIX: single-pid SIGTERM only (the server shares the process group, so a
+    killpg would take the board down with it; children may briefly outlive the watcher)."""
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/PID", str(pid), "/FI", "IMAGENAME eq python.exe"],
-                           capture_output=True)
+            chk = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True)
+            if "python.exe" not in (chk.stdout or ""):
+                return                       # recycled or already gone -- never tree-kill a stranger
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
         else:
             os.kill(pid, 15)
     except Exception:
@@ -215,6 +226,51 @@ def tts_muted_write(muted):
     DATA.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return bool(muted)
+
+
+# --------------------------------------------------------------------------- #
+# Per-agent server-speaker VOICE map -- data/voices.json ({name: voice_id}).    #
+# Its OWN file (not settings.json): the optional server-side TTS speaker reads   #
+# it directly to pick each agent's voice. Same git-ignored data/ home, same      #
+# read-merge-write discipline as the memory toggle, so setting one agent's voice  #
+# never clobbers another's. Setting the voice to "off" removes the entry.         #
+# --------------------------------------------------------------------------- #
+VOICES_FILE = DATA / "voices.json"
+
+# The known English voice ids in the v1.0 voice pack. Served by GET /control/voices
+# as a static pick-list so the board never has to import or probe the (optional) speech
+# engine -- keeping this server dependency-free. Update by hand if the pack changes.
+VOICE_PACK_V1 = [
+    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore",
+    "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+    "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+    "am_onyx", "am_puck", "am_santa",
+    "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+    "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+]
+
+
+def voices_read():
+    """The per-agent voice map {name: voice_id} from data/voices.json. Corruption never crashes."""
+    if VOICES_FILE.is_file():
+        try:
+            d = json.loads(VOICES_FILE.read_text(encoding="utf-8"))
+            return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def voices_write(agent, voice):
+    """Set one agent's voice, or remove it when voice == 'off', preserving every other entry."""
+    data = voices_read()
+    if voice == "off":
+        data.pop(agent, None)
+    else:
+        data[agent] = voice
+    DATA.mkdir(parents=True, exist_ok=True)
+    VOICES_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return data
 
 
 # --------------------------------------------------------------------------- #
@@ -464,6 +520,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send_json({"error": "unauthorized"}, 401)
             return self._send_json({"memory": memory_read()})
+        if route.path == "/control/voices":
+            # Gated exactly like /control/memory (control 404 -> authed 401). Returns the STATIC
+            # v1.0 voice-pack id list plus the current per-agent assignments -- the board never
+            # probes the speech engine, so it stays dependency-free.
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"voices": VOICE_PACK_V1, "assigned": voices_read()})
         if route.path == "/control/tts":
             return self._send_json({"muted": tts_muted_read(), "server": self.board.speaker_active()})
         return self._send_json({"error": "not found"}, 404)
@@ -505,14 +570,15 @@ class Handler(BaseHTTPRequestHandler):
             name = data.get("agent", "")
             if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
                 return self._send_json({"error": "bad agent name"}, 400)
-            crew = read_crew()
-            in_roster = any(i.get("name") == name for i in read_roster_list())
-            if name == "board" or (name not in crew and not in_roster):
-                return self._send_json({"error": "no such agent"}, 404)
-            if name in crew:
-                kill_pid(crew.pop(name))
-                write_crew(crew)
-            roster_remove(name)   # drop from the persisted lineup so a restart won't bring it back
+            with CREW_LOCK:       # serialize the run.pids read-modify-write vs add/respawn
+                crew = read_crew()
+                in_roster = any(i.get("name") == name for i in read_roster_list())
+                if name == "board" or (name not in crew and not in_roster):
+                    return self._send_json({"error": "no such agent"}, 404)
+                if name in crew:
+                    kill_pid(crew.pop(name))
+                    write_crew(crew)
+                roster_remove(name)   # drop from the persisted lineup so a restart won't bring it back
             return self._send_json({"ok": True, "kicked": name})
         if route.path == "/control/clear":
             if not self.control:
@@ -535,6 +601,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"error": "could not write settings: %s" % e}, 500)
             return self._send_json({"ok": True, "agent": name, "on": bool(data.get("on")), "memory": mem})
+        if route.path == "/control/voice":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            name = data.get("agent", "")
+            voice = data.get("voice", "")
+            if not re.fullmatch(r"[a-z0-9_-]{1,64}", name or ""):
+                return self._send_json({"error": "bad agent name"}, 400)
+            # voice ids are [A-Za-z0-9_]; the sentinel "off" also matches and clears the entry
+            if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", voice or ""):
+                return self._send_json({"error": "bad voice id"}, 400)
+            try:
+                vmap = voices_write(name, voice)
+            except Exception as e:
+                return self._send_json({"error": "could not write voices: %s" % e}, 500)
+            return self._send_json({"ok": True, "agent": name, "voice": voice, "voices": vmap})
         if route.path == "/control/tts":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -574,19 +658,48 @@ class Handler(BaseHTTPRequestHandler):
             name = re.sub(r"[^a-z0-9_-]", "", p.name.lower())
             if not name:
                 return self._send_json({"error": "cannot derive an agent name from that folder"}, 400)
-            crew = read_crew()
-            if name == "board" or name in crew:
-                return self._send_json({"error": "an agent named '%s' is already here" % name}, 409)
-            # fixed command, folder as a validated list-arg -> no shell, no injection. The agent
-            # inherits this board's URL + live flag from the environment (see docs/SECURITY.md).
-            env = dict(os.environ)
-            env["FLEETCHAT_AGENT_DIR"] = str(p)
-            proc = subprocess.Popen([sys.executable, str(REPO / "agents" / "run_agent.py"),
-                                     name, "--dir", str(p)], env=env)
-            crew[name] = proc.pid
-            write_crew(crew)
-            roster_add(name, str(p))   # persist to the lineup so a restart re-launches it
+            with CREW_LOCK:       # serialize the run.pids read-modify-write vs kick/respawn
+                crew = read_crew()
+                if name == "board" or name in crew:
+                    return self._send_json({"error": "an agent named '%s' is already here" % name}, 409)
+                # fixed command, folder as a validated list-arg -> no shell, no injection. The agent
+                # inherits this board's URL + live flag from the environment (see docs/SECURITY.md).
+                env = dict(os.environ)
+                env["FLEETCHAT_AGENT_DIR"] = str(p)
+                proc = subprocess.Popen([sys.executable, str(REPO / "agents" / "run_agent.py"),
+                                         name, "--dir", str(p)], env=env)
+                crew[name] = proc.pid
+                write_crew(crew)
+                roster_add(name, str(p))   # persist to the lineup so a restart re-launches it
             return self._send_json({"ok": True, "added": name})
+        if route.path == "/control/respawn":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            name = data.get("agent", "")
+            if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
+                return self._send_json({"error": "bad agent name"}, 400)
+            with CREW_LOCK:       # serialize the run.pids read-modify-write vs add/kick
+                crew = read_crew()
+                entry = next((i for i in read_roster_list() if i.get("name") == name), None)
+                if name == "board" or (name not in crew and entry is None):
+                    return self._send_json({"error": "no such agent"}, 404)
+                if name in crew:                   # running -> stop the watcher AND its process tree
+                    kill_pid(crew.pop(name))
+                # Relaunch with the SAME fixed list-arg Popen /control/add uses (no shell). The optional
+                # project folder comes from the persisted roster entry; without one it launches bare.
+                folder = entry.get("dir") if entry else None
+                args = [sys.executable, str(REPO / "agents" / "run_agent.py"), name]
+                env = dict(os.environ)
+                if folder:
+                    args += ["--dir", str(folder)]
+                    env["FLEETCHAT_AGENT_DIR"] = str(folder)
+                proc = subprocess.Popen(args, env=env)
+                crew[name] = proc.pid
+                write_crew(crew)
+            return self._send_json({"ok": True, "respawned": name, "pid": proc.pid})
         if route.path == "/control/pick":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)

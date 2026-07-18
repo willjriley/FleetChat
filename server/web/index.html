@@ -199,6 +199,18 @@
   .theme-sw .sw-prev{height:32px; border-radius:7px; border:1px solid rgba(127,127,127,.28); display:flex; align-items:flex-end; justify-content:flex-end; padding:5px}
   .theme-sw .sw-dot{width:13px; height:13px; border-radius:50%; box-shadow:0 0 0 1px rgba(255,255,255,.4)}
   .theme-sw .sw-name{font-weight:600}
+  /* operator-command result panels (client-only /find, /status, /voices ...) + the /find match jump */
+  .msg.localnote .who{color:var(--accent)}
+  .md mark{background:color-mix(in srgb,var(--accent) 32%,transparent);color:inherit;border-radius:3px;padding:0 2px}
+  .md table{border-collapse:collapse;margin:6px 0;font-size:13px;display:block;overflow-x:auto}
+  .md th,.md td{border:1px solid var(--line);padding:3px 10px;text-align:left;white-space:nowrap}
+  .md th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+  .md ul.findhits{list-style:none;padding-left:0;margin:4px 0}
+  .md ul.findhits li{margin:3px 0}
+  .md ul.findhits a{color:var(--accent);text-decoration:none;font-weight:600}
+  .md ul.findhits a:hover{text-decoration:underline}
+  .msg.flash{animation:flashmsg 1.2s ease-out}
+  @keyframes flashmsg{0%{background:color-mix(in srgb,var(--accent) 20%,transparent)}100%{background:transparent}}
 </style>
 <script>
   // Apply the saved theme before first paint so there's no flash of the default palette.
@@ -510,6 +522,12 @@
 
   // ---------- slash commands: type / to see + pick; some are handled here (not posted) ----------
   var SLASH=[
+    {cmd:"/find",     desc:"Search the board history (only you see the results)"},
+    {cmd:"/export",   desc:"Download the whole transcript as Markdown"},
+    {cmd:"/status",   desc:"Crew snapshot: roles, memory, who's typing/speaking"},
+    {cmd:"/setvoice", desc:"Set an agent's speaking voice — /setvoice <agent> <voice>"},
+    {cmd:"/voices",   desc:"List available voices + current assignments"},
+    {cmd:"/respawn",  desc:"Restart one agent (drops its in-flight turn)"},
     {cmd:"/clear",    desc:"Clear the board history (for everyone)"},
     {cmd:"/mute",     desc:"Mute agent voices"},
     {cmd:"/unmute",   desc:"Unmute agent voices"},
@@ -517,6 +535,9 @@
     {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
     {cmd:"/help",     desc:"Show these commands"}
   ];
+  // Commands that take arguments: picking them from the palette leaves a trailing space so you
+  // can type the args right away (generalized from the old /poll-only special case).
+  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1};
   var sBox=null, sItems=[], sSel=0;
   function slashOpen(){ return !!sBox; }
   function slashClose(){ if(sBox){ sBox.remove(); sBox=null; } sItems=[]; sSel=0; }
@@ -541,7 +562,7 @@
   function slashChoose(idx){
     if(idx<0||idx>=sItems.length){ slashClose(); return; }
     var c=sItems[idx], ta=$("#text");
-    ta.value = c.cmd==="/poll" ? "/poll " : c.cmd;   // /poll needs options -> leave room to type them
+    ta.value = ARGCMDS[c.cmd] ? c.cmd+" " : c.cmd;   // arg-taking commands -> leave a space to type the args
     slashClose(); ta.focus();
   }
   function showCommands(){ var ta=$("#text"); ta.value="/"; ta.focus(); slashRender(); }
@@ -552,8 +573,22 @@
     if(text==="/restart"){ $("#text").value=""; renderChips(); restartServer(); return true; }
     if(text==="/shutdown"){ $("#text").value=""; renderChips(); shutdownServer(); return true; }
     if(text==="/help"){ showCommands(); return true; }
+    // ----- operator commands: each is self-contained; the client-only ones never touch the board -----
+    if(text==="/status"){ clearInput(); cmdStatus(); return true; }
+    if(text==="/export"){ clearInput(); cmdExport(); return true; }
+    if(text==="/voices"){ clearInput(); cmdVoices(); return true; }
+    var mFind=text.match(/^\/find\s+([\s\S]+)$/);
+    if(mFind){ clearInput(); cmdFind(mFind[1]); return true; }
+    if(/^\/find\b/.test(text)){ clearInput(); localNote("<p><b>/find</b> — type something to search for, e.g. <code>/find deploy</code></p>"); return true; }
+    var mVoice=text.match(/^\/setvoice\s+([a-z0-9_-]+)\s+(\S+)$/);
+    if(mVoice){ clearInput(); cmdSetVoice(mVoice[1], mVoice[2]); return true; }
+    if(/^\/setvoice\b/.test(text)){ clearInput(); localNote("<p><b>/setvoice</b> — usage: <code>/setvoice &lt;agent&gt; &lt;voice&gt;</code> &nbsp;(voice <code>off</code> clears it; see <code>/voices</code>)</p>"); return true; }
+    var mResp=text.match(/^\/respawn\s+([a-z0-9_-]+)$/);
+    if(mResp){ clearInput(); cmdRespawn(mResp[1]); return true; }
+    if(/^\/respawn\b/.test(text)){ clearInput(); localNote("<p><b>/respawn</b> — usage: <code>/respawn &lt;agent&gt;</code></p>"); return true; }
     return false;
   }
+  function clearInput(){ $("#text").value=""; renderChips(); slashClose(); }
   function restartServer(){
     if(!confirm("Restart the server and relaunch the whole crew? (flushes stuck agents; history is kept)")) return;
     fetch("/control/restart",{method:"POST",headers:headers()}).then(function(r){
@@ -612,13 +647,133 @@
     return new RegExp("(^|[\\s(>])@"+e+"\\b","i").test(text||"");
   }
 
+  // ---------- operator command helpers (client-only result panels + the server-backed ones) ----------
+  function localNote(html){
+    // A CLIENT-ONLY result panel: mirrors add()'s message shape but is NEVER posted to the board, so a
+    // personal query (/find, /status, /voices ...) leaves no trace on the shared log. `html` is built by
+    // the callers with every dynamic piece run through esc(), so setting innerHTML here is XSS-safe.
+    if(msgs.querySelector(".empty")) msgs.innerHTML="";
+    var el=document.createElement("div"); el.className="msg localnote";
+    var a=document.createElement("div"); a.className="av"; a.style.background="var(--accent)"; a.textContent="🔎"; el.appendChild(a);
+    var body=document.createElement("div"); body.className="body";
+    var top=document.createElement("div"); top.className="top";
+    var who=document.createElement("span"); who.className="who"; who.textContent="you (local)";
+    var wh=document.createElement("span"); wh.className="when"; wh.textContent=when(Date.now()/1000);
+    top.appendChild(who); top.appendChild(wh); body.appendChild(top);
+    var tx=document.createElement("div"); tx.className="md"; tx.innerHTML=html; body.appendChild(tx);
+    el.appendChild(body);
+    var nearBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 140;
+    msgs.appendChild(el);
+    if(nearBottom) msgs.scrollTop = msgs.scrollHeight;
+    return el;
+  }
+  function jumpToMsg(id){
+    var el=msgs.querySelector('.msg[data-id="'+id+'"]');   // add() stamps data-id on every rendered message
+    if(!el) return;
+    el.scrollIntoView({behavior:"smooth", block:"center"});
+    el.classList.add("flash"); setTimeout(function(){ el.classList.remove("flash"); }, 1200);
+  }
+  function findSnippet(text, qLower){
+    // an escaped one-line snippet with the match <mark>ed and a little context on each side
+    var t=(text||"").replace(/\s+/g," ").trim();
+    var idx=t.toLowerCase().indexOf(qLower);
+    if(idx<0) return esc(t.slice(0,90));
+    var s=Math.max(0, idx-30), e=Math.min(t.length, idx+qLower.length+50);
+    return (s>0?"…":"")+esc(t.slice(s, idx))+"<mark>"+esc(t.slice(idx, idx+qLower.length))+"</mark>"+esc(t.slice(idx+qLower.length, e))+(e<t.length?"…":"");
+  }
+  function cmdFind(query){
+    // CLIENT-ONLY: case-insensitive substring search over sender+text of every message we've seen
+    var q=(query||"").trim(), ql=q.toLowerCase();
+    if(!ql){ localNote("<p>Nothing to search for — try <code>/find deploy</code>.</p>"); return; }
+    var hits=[];
+    for(var i=0;i<allMsgs.length && hits.length<20;i++){
+      var m=allMsgs[i];
+      if((((m.sender||"")+" "+(m.text||"")).toLowerCase()).indexOf(ql)>=0) hits.push(m);
+    }
+    if(!hits.length){ localNote("<p>🔎 No messages match <b>"+esc(q)+"</b>.</p>"); return; }
+    var rows=hits.map(function(m){
+      return '<li><a href="#" data-jump="'+m.id+'">#'+m.id+" "+esc(m.sender||"?")+" ("+esc(when(m.ts))+")</a>: "+findSnippet(m.text, ql)+"</li>";
+    }).join("");
+    var note=localNote("<p>🔎 <b>"+hits.length+"</b> match"+(hits.length===1?"":"es")+" for <b>"+esc(q)+"</b>"+(hits.length>=20?" (first 20)":"")+":</p><ul class=\"findhits\">"+rows+"</ul>");
+    note.querySelectorAll("a[data-jump]").forEach(function(a){
+      a.addEventListener("click", function(e){ e.preventDefault(); jumpToMsg(+a.getAttribute("data-jump")); });
+    });
+  }
+  function cmdExport(){
+    // CLIENT-ONLY: assemble a Markdown transcript and download it via a Blob (no server round-trip)
+    var rows=allMsgs.filter(function(m){ return (m.text||"").indexOf("/vote ")!==0; });   // vote plumbing isn't a message
+    if(!rows.length){ localNote("<p>Nothing to export yet — the board is empty.</p>"); return; }
+    var md="# FleetChat transcript\n\n"+rows.map(function(m){
+      return "**"+(m.sender||"?")+"** ("+when(m.ts)+"): "+(m.text||"");
+    }).join("\n\n")+"\n";
+    var url=URL.createObjectURL(new Blob([md],{type:"text/markdown"}));
+    var a=document.createElement("a"); a.href=url; a.download="fleetchat-transcript.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+    localNote("<p>⬇ Exported <b>"+rows.length+"</b> message"+(rows.length===1?"":"s")+" to <code>fleetchat-transcript.md</code>.</p>");
+  }
+  function cmdStatus(){
+    // CLIENT-ONLY: a snapshot built from data already polled (roster, memory flags, typing/speaking)
+    if(!rosterList.length){ localNote("<p>No agents on the board yet.</p>"); return; }
+    var showMem=controlOn;   // the memory column only means something when control (and loadMemory) is on
+    var head="<tr><th>agent</th><th>role</th>"+(showMem?"<th>memory</th>":"")+"<th>now</th></tr>";
+    var rows=rosterList.map(function(a){
+      var name=a.id, st=[];
+      if(typingSet[name]) st.push("⌨️ typing");
+      if(speakingSet[name]) st.push("🔊 speaking");
+      return "<tr><td><b>"+esc(a.name||name)+"</b></td><td>"+esc(a.role||"")+"</td>"+
+             (showMem?"<td>"+(memoryState[name]?"on":"off")+"</td>":"")+
+             "<td>"+(st.length?st.join(", "):"idle")+"</td></tr>";
+    }).join("");
+    localNote("<p>👥 Crew — <b>"+rosterList.length+"</b> agent"+(rosterList.length===1?"":"s")+":</p><table class=\"statustbl\">"+head+rows+"</table>");
+  }
+  function cmdSetVoice(agent, voice){
+    // SERVER-backed: writes data/voices.json, the map the optional server-side speaker reads. NOTE this
+    // is the SERVER speaker's voice map; the browser-fallback voices (VOICE_MAP above) are separate (follow-up).
+    fetch("/control/voice",{method:"POST",headers:headers({"Content-Type":"application/json"}),
+      body:JSON.stringify({agent:agent, voice:voice})})
+      .then(function(r){ if(r.status===401){ askToken(); return null; }
+        return r.json().then(function(j){ return {s:r.status, j:j}; }); })
+      .then(function(res){ if(!res) return;
+        if(res.s>=400){ localNote("<p>⚠️ Couldn't set voice: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
+        if(voice==="off") localNote("<p>🔇 Cleared <b>"+esc(agent)+"</b>'s voice assignment.</p>");
+        else localNote("<p>🎙️ <b>"+esc(agent)+"</b> will now speak with <b>"+esc(voice)+"</b>.</p>"); })
+      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to set the voice.</p>"); });
+  }
+  function cmdVoices(){
+    // SERVER-backed (read-only): the static voice-pack id list + the current per-agent assignments
+    fetch("/control/voices",{headers:headers()})
+      .then(function(r){ if(r.status===401){ askToken(); return null; }
+        if(r.status===404){ localNote("<p>/voices needs the server started with --control.</p>"); return null; }
+        return r.status===200 ? r.json() : null; })
+      .then(function(j){ if(!j) return;
+        var avail=(j.voices||[]).map(function(v){ return "<code>"+esc(v)+"</code>"; }).join(" ") || "<i>none</i>";
+        var asg=j.assigned||{}, keys=Object.keys(asg).sort();
+        var cur=keys.length ? "<ul>"+keys.map(function(k){ return "<li><b>"+esc(k)+"</b> → <code>"+esc(asg[k])+"</code></li>"; }).join("")+"</ul>"
+                            : "<p><i>none yet — assign one with <code>/setvoice &lt;agent&gt; &lt;voice&gt;</code></i></p>";
+        localNote("<p>🎙️ <b>Available voices</b> ("+(j.voices||[]).length+"):</p><p>"+avail+"</p><p><b>Current assignments:</b></p>"+cur); })
+      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server for the voice list.</p>"); });
+  }
+  function cmdRespawn(agent){
+    // SERVER-backed: stop + relaunch one agent. Its current turn is lost, hence the confirm.
+    if(!confirm("Respawn "+agent+"? Its in-flight turn is lost.")) return;
+    fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),
+      body:JSON.stringify({agent:agent})})
+      .then(function(r){ if(r.status===401){ askToken(); return null; }
+        return r.json().then(function(j){ return {s:r.status, j:j}; }); })
+      .then(function(res){ if(!res) return;
+        if(res.s>=400){ localNote("<p>⚠️ Couldn't respawn <b>"+esc(agent)+"</b>: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
+        localNote("<p>♻️ Respawned <b>"+esc(agent)+"</b> (pid "+esc(String(res.j&&res.j.pid))+").</p>"); poll(); })
+      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to respawn.</p>"); });
+  }
+
   function add(m){
     if(seen[m.id]) return; seen[m.id]=1; allMsgs.push(m);
     if((m.tags||[]).indexOf("join")>=0) agentNames[m.sender]=1;
     if((m.text||"").indexOf("/vote ")===0) return;  // vote messages are plumbing, not shown
     if(msgs.querySelector(".empty")) msgs.innerHTML="";
     counts[m.sender]=(counts[m.sender]||0)+1;
-    var el=document.createElement("div"); el.className="msg";
+    var el=document.createElement("div"); el.className="msg"; el.dataset.id=m.id;   // lets /find scroll to a hit
     el.appendChild(av(m.sender));
     var body=document.createElement("div"); body.className="body";
     var top=document.createElement("div"); top.className="top";
