@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FleetChat — Task board</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --muted:#6b7480;
+    --line:#e5e8ec; --accent:#3b6ea5; --chip:#eef1f5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0f1216; --panel:#171b21; --ink:#e8ebef; --muted:#8b95a1;
+           --line:#252b33; --accent:#6ea8e0; --chip:#222831; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:12px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:16px;margin:0}
+  header a{color:var(--accent);text-decoration:none;font-size:13px}
+  header a:hover{text-decoration:underline}
+  header .sp{margin-left:auto}
+  .newbtn{font:inherit;font-size:13px;color:#fff;background:var(--accent);border:0;border-radius:8px;padding:7px 14px;cursor:pointer}
+  .board{flex:1;display:flex;gap:14px;padding:16px;overflow-x:auto;align-items:flex-start}
+  .col{flex:0 0 270px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;max-height:100%;display:flex;flex-direction:column}
+  .col h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:2px 4px 10px;display:flex;align-items:center;gap:7px}
+  .col h2 .n{background:var(--chip);border-radius:10px;padding:0 8px;font-weight:600}
+  .cards{overflow-y:auto;min-height:30px}
+  .card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 8px;background:var(--bg)}
+  .card.claimed{border-left:3px solid var(--accent)}
+  .card.stale{border-left:3px solid #d68910;animation:amber 1.6s infinite}
+  .card.done{opacity:.6}
+  @keyframes amber{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 2px rgba(214,137,16,.28)}}
+  .card .t{font-size:13.5px;font-weight:600;line-height:1.35;word-wrap:break-word}
+  .card .meta{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;color:#fff;font-size:10px;font-weight:700;flex:none}
+  .card .who{font-size:11.5px;color:var(--muted)}
+  .card .age{margin-left:auto;font-size:11px;color:var(--muted)}
+  .card .sum{font-size:12px;color:var(--muted);font-style:italic;margin-top:6px}
+  .card .btns{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+  .card .btns button{font:inherit;font-size:11.5px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:3px 9px;cursor:pointer}
+  .card .btns button:hover{border-color:var(--accent);color:var(--accent)}
+  .empty{font-size:12px;color:var(--muted);margin:4px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>📋 Task board</h1>
+  <a href="/" id="backlink">&larr; back to the chat</a>
+  <span class="sp"></span>
+  <button class="newbtn" id="newtask" style="display:none">+ New task</button>
+</header>
+<div class="board" id="board"></div>
+<script>
+(function(){
+  var $=function(s){return document.querySelector(s);};
+  var token=localStorage.getItem("fleetchat_token")||"";
+  function headers(extra){ var h=extra||{}; if(token) h["X-Fleet-Token"]=token; return h; }
+  // The classic left-to-right lanes; Backlog = parked/someday, Open = ready to take.
+  var LANES=[["backlog","Backlog"],["open","Open"],["claimed","In progress"],["review","Review"],["done","Done"]];
+  var cache=[];
+  function hue(s){ var h=0; for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))%360; return h; }
+  function av(s){ var d=document.createElement("span"); d.className="av";
+    d.style.background="hsl("+hue(s)+" 55% 45%)"; d.textContent=(s[0]||"?").toUpperCase(); d.title=s; return d; }
+  function tage(ts){ var s=(Date.now()/1000-ts); if(s<90)return "now"; if(s<3600)return Math.round(s/60)+"m";
+    if(s<86400)return Math.round(s/3600)+"h"; return Math.round(s/86400)+"d"; }
+  function fdate(ts){ var d=new Date(ts*1000); return (d.getMonth()+1)+"/"+d.getDate()+" "+
+    ("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2); }
+  var DONE_SHOW_SECS=48*3600;   // done cards stay VISIBLE for 48h, then live on in the ledger unseen
+  function me(){ var n=(localStorage.getItem("fleetchat_name")||"").trim().toLowerCase().replace(/[^a-z0-9_-]/g,""); return n||"operator"; }
+  function op(body){
+    fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify(body)})
+      .then(function(r){ return r.json(); }).then(function(j){ if(j&&j.error) alert(j.error); load(); })
+      .catch(function(){});
+  }
+  function render(){
+    var root=$("#board"); root.innerHTML="";
+    LANES.forEach(function(L){
+      var col=document.createElement("div"); col.className="col";
+      var items=cache.filter(function(t){ return t.status===L[0]; });
+      var hidden=0;
+      if(L[0]==="done"){   // age out of VIEW after 48h -- the ledger still holds them (search comes later)
+        var cutoff=Date.now()/1000-DONE_SHOW_SECS, all=items;
+        items=all.filter(function(t){ return (t.closed||t.updated||0)>=cutoff; });
+        hidden=all.length-items.length;
+      }
+      var h=document.createElement("h2"); var hl=document.createElement("span"); hl.textContent=L[1]; h.appendChild(hl);
+      var n=document.createElement("span"); n.className="n"; n.textContent=items.length+(hidden?"+"+hidden:""); h.appendChild(n); col.appendChild(h);
+      var wrap=document.createElement("div"); wrap.className="cards";
+      if(hidden){ var hnote=document.createElement("div"); hnote.className="empty";
+        hnote.textContent=hidden+" older done card"+(hidden>1?"s":"")+" held in the ledger (not shown)"; wrap.appendChild(hnote); }
+      if(!items.length){ var e=document.createElement("div"); e.className="empty"; e.textContent="—"; wrap.appendChild(e); }
+      items.forEach(function(t){
+        var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
+        var tt=document.createElement("div"); tt.className="t"; tt.textContent=t.title; c.appendChild(tt);
+        if(t.desc){ var dd=document.createElement("div"); dd.className="sum"; dd.style.fontStyle="normal"; dd.textContent=t.desc; c.appendChild(dd); }
+        var meta=document.createElement("div"); meta.className="meta";
+        if(t.owner){ meta.appendChild(av(t.owner)); var w=document.createElement("span"); w.className="who"; w.textContent=t.owner; meta.appendChild(w); }
+        (t.assignees||[]).forEach(function(a){ if(a!==t.owner) meta.appendChild(av(a)); });
+        var age=document.createElement("span"); age.className="age";
+        age.textContent=t.id+(t.status==="done" ? " · done "+fdate(t.closed||t.updated) : " · "+tage(t.updated));
+        age.title="created "+fdate(t.created)+(t.closed ? " · closed "+fdate(t.closed) : "");   // exact dates on hover
+        meta.appendChild(age);
+        c.appendChild(meta);
+        if(t.summary){ var s=document.createElement("div"); s.className="sum"; s.textContent=t.summary; c.appendChild(s); }
+        if(t.status!=="done"){
+          var b=document.createElement("div"); b.className="btns";
+          var btn=function(label,fn){ var x=document.createElement("button"); x.textContent=label; x.addEventListener("click",fn); b.appendChild(x); };
+          btn("✎", function(){
+            var nt=prompt("Title:", t.title); if(nt===null) return;
+            var nd=prompt("Description (optional):", t.desc||""); if(nd===null) nd=t.desc||"";
+            op({op:"edit", id:t.id, title:nt, desc:nd});
+          });
+          if(t.status==="backlog") btn("→ Open", function(){ op({op:"status", id:t.id, lane:"open"}); });
+          if(t.status==="open"){ btn("Claim", function(){ op({op:"claim", id:t.id, agent:me()}); });
+                                 btn("→ Backlog", function(){ op({op:"status", id:t.id, lane:"backlog"}); }); }
+          if(t.stale) btn("Adopt", function(){ op({op:"claim", id:t.id, agent:me()}); });
+          if(t.status==="claimed") btn("→ Review", function(){ op({op:"status", id:t.id, lane:"review"}); });
+          if(t.status==="review") btn("← Working", function(){ op({op:"status", id:t.id, lane:"claimed"}); });
+          btn("✓ Done", function(){ var s=prompt("One-line summary (optional):")||""; op({op:"close", id:t.id, summary:s}); });
+          c.appendChild(b);
+        }
+        wrap.appendChild(c);
+      });
+      col.appendChild(wrap);
+      root.appendChild(col);
+    });
+  }
+  function load(){
+    fetch("/threads",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
+      .then(function(j){ if(j&&j.threads){ cache=j.threads; render(); } })
+      .catch(function(){});
+  }
+  $("#newtask").addEventListener("click", function(){
+    var title=prompt("Task title:"); if(!title) return;
+    op({op:"create", title:title, by:me()});
+  });
+  // "Back" must not duplicate the chat: this tab is normally OPENED BY the chat page, so back =
+  // close this tab (the original chat is still there). If /tasks was visited directly by URL,
+  // browsers block self-close -- then (and only then) the fallback navigation to "/" is correct,
+  // because no original tab exists.
+  $("#backlink").addEventListener("click", function(e){
+    e.preventDefault();
+    window.close();
+    setTimeout(function(){ location.href="/"; }, 200);  // only reached when close() was blocked
+  });
+  fetch("/health").then(function(r){return r.json();}).then(function(h){
+    if(h && h.control) $("#newtask").style.display="";   // mutations are control-gated; hide the button when they'd 404
+  }).catch(function(){});
+  setInterval(load, 3000);
+  load();
+})();
+</script>
+</body>
+</html>
