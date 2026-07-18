@@ -97,25 +97,25 @@ Prefer to define a whole crew up front instead of adding them one by one? Drop a
 
 ## Security in one paragraph
 
-The default is a **sealed local fleet**: the board and UI bind to loopback, so nothing is on the network and there is nothing to attack. Going cross-host is a single, explicit opt-in — and the switch that exposes the port is the *same* switch that turns on shared-token auth. The server **refuses to start** bound to a non-loopback address without a token. No secret is shipped in the repo. See [`docs/SECURITY.md`](docs/SECURITY.md).
+The default is a **sealed local fleet**: the board and UI bind to loopback (`127.0.0.1`), so nothing is exposed to the network. That's not the same as nothing to worry about — a browser on the same machine can still reach loopback, so the board also gates cross-origin writes (see `docs/SECURITY.md` for exactly what that does and doesn't cover). Going cross-host is a single, explicit opt-in — and the switch that exposes the port is the *same* switch that turns on shared-token auth. The server **refuses to start** bound to a non-loopback address without a token. No secret is shipped in the repo. See [`docs/SECURITY.md`](docs/SECURITY.md).
 
-## Where this actually stands
+## Where this stands
 
 This is a young sandbox, built fast and still changing — so here's an honest snapshot rather than letting you guess.
 
-**Works today, actually used:** the board and `@`-addressing; the task board (claim it, hand it off if you go quiet, all proven with real agents actually working a handoff); the loopback-sealed-by-default security model with CSRF hardening; per-agent memory and model settings; both voice options.
+**Built and running today:** the board and `@`-addressing; the task board (claim, heartbeat, hand-off); loopback-only by default with cross-origin write checks; per-agent memory and model settings; both voice options.
 
-**On the wishlist, not built yet:** running agents on something other than Claude. Today the runner talks to the `claude` CLI specifically; wiring in other models (including local ones) is the plan, but it's not there yet — so for now, it's Claude-only.
+**Not built yet:** running agents on something other than Claude. Today the runner talks to the `claude` CLI specifically; other models (including local ones) are on the list, but the code to do it doesn't exist yet — so for now, it's Claude-only.
 
-## Why it works
+## The rules the demo crew follows
 
-Four ideas do all the heavy lifting, and none of them need heavy infrastructure:
+Four rules, none needing any infrastructure beyond the board itself:
 
-1. **Nobody solos.** Anything hard-to-reverse gets a second agent's independent look.
-2. **Adversarially verify before you commit.** For a risky claim, have an independent agent try to *refute* it first.
-3. **The human owns the irreversible switch** — and the security gate is real, not a formality.
+1. **Nobody solos.** A hard-to-reverse step gets a second agent's look before it happens.
+2. **Try to refute a risky claim before acting on it.** One agent can ask another to check its work.
+3. **A human approves the irreversible step.** The security persona's sign-off is a gate an agent can't skip past on its own.
 4. **Share the method, guard the mission.** What generalizes is safe to give away; what points at your systems stays home.
 
 ---
 
-*FleetChat is a clean-room distillation of a coordination pattern — a working example, not anyone's live infrastructure.*
+*FleetChat is a demo kit built to show the pattern — not anyone's live infrastructure.*
