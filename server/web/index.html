@@ -69,6 +69,12 @@
   .md ul,.md ol{margin:4px 0;padding-left:22px} .md li{margin:1px 0}
   .md a{color:var(--accent);text-decoration:none} .md a:hover{text-decoration:underline}
   code.inline{background:var(--chip);border-radius:4px;padding:1px 5px;font:12.5px ui-monospace,Consolas,monospace}
+  /* @-mention chips inside message text + a "you were tagged" row highlight. Chip tint reuses the
+     same per-name hue() the avatars use (passed in as --mc-h); @all + the row accent use --accent. */
+  .mchip{display:inline;padding:0 5px;border-radius:6px;font-weight:600;white-space:nowrap;background:hsla(var(--mc-h,210),65%,45%,.16);color:hsl(var(--mc-h,210),58%,38%)}
+  @media (prefers-color-scheme:dark){ .mchip{background:hsla(var(--mc-h,210),60%,58%,.22);color:hsl(var(--mc-h,210),80%,74%)} }
+  .mchip-all{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);font-weight:700}
+  .msg.tagged{background:color-mix(in srgb,var(--accent) 10%,transparent);border-left:3px solid var(--accent);border-radius:8px;padding:8px 12px}
   .code{position:relative;margin:8px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--codebg)}
   .code .lang{position:absolute;top:0;right:0;font-size:10px;color:var(--muted);background:var(--chip);padding:1px 7px;border-radius:0 0 0 6px;text-transform:uppercase;letter-spacing:.5px}
   .code pre{margin:0;overflow-x:auto;padding:8px 0;font:12.5px/1.55 ui-monospace,Consolas,monospace}
@@ -470,6 +476,46 @@
     }).catch(function(){ alert("Couldn't reach the server."); });
   }
 
+  // ---------- @-mention chips + "you were tagged" row highlight ----------
+  // After a message renders, wrap @name tokens in its TEXT (never code/pre/links) in a small color
+  // pill. The tint reuses the SAME per-name hue() the avatars use, so a mention reads as "that
+  // person"; @all gets the accent color. A message that @-names YOU (the #who name) also tints its
+  // whole row, so "you were tagged" is scannable at a glance.
+  var MENTION_RE=/(^|[\s(>])@(all|[A-Za-z0-9_-]{2,32})\b/g;
+  function mentionChip(name){
+    var span=document.createElement("span"), lc=(name||"").toLowerCase();
+    if(lc==="all"){ span.className="mchip mchip-all"; }
+    else { span.className="mchip"; span.style.setProperty("--mc-h", hue(lc)+""); }
+    span.textContent="@"+name;   // textContent -> never re-injects HTML
+    return span;
+  }
+  function decorateMentions(root){
+    var walker=document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode:function(node){
+      for(var p=node.parentNode; p && p!==root; p=p.parentNode){
+        var t=p.nodeName; if(t==="A"||t==="CODE"||t==="PRE") return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }});
+    var targets=[], node;
+    while((node=walker.nextNode())) targets.push(node);   // collect first, then mutate (can't edit mid-walk)
+    targets.forEach(function(tn){
+      var text=tn.nodeValue, frag=document.createDocumentFragment(), last=0, m; MENTION_RE.lastIndex=0;
+      while((m=MENTION_RE.exec(text))){
+        var at=m.index+m[1].length;                        // the '@' position (m[1] is the lead char, kept as text)
+        if(at>last) frag.appendChild(document.createTextNode(text.slice(last,at)));
+        frag.appendChild(mentionChip(m[2])); last=m.index+m[0].length;
+      }
+      if(!frag.childNodes.length) return;                  // no @mention in this node -> leave it be
+      if(last<text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      tn.parentNode.replaceChild(frag, tn);
+    });
+  }
+  function mentionsMe(text){
+    var me=($("#who").value||"").trim(); if(me.length<2) return false;
+    var e=me.replace(/[.*+?^${}()|[\]\\-]/g,"\\$&");
+    return new RegExp("(^|[\\s(>])@"+e+"\\b","i").test(text||"");
+  }
+
   function add(m){
     if(seen[m.id]) return; seen[m.id]=1; allMsgs.push(m);
     if((m.tags||[]).indexOf("join")>=0) agentNames[m.sender]=1;
@@ -486,11 +532,12 @@
 
     var poll=renderPoll(m);
     if(poll){ body.appendChild(poll); }
-    else { var tx=document.createElement("div"); tx.className="md"; tx.innerHTML=renderMarkdown(m.text||""); body.appendChild(tx); }
+    else { var tx=document.createElement("div"); tx.className="md"; tx.innerHTML=renderMarkdown(m.text||""); decorateMentions(tx); body.appendChild(tx); }
 
     if(m.tags && m.tags.length){ var t=document.createElement("div"); t.className="tags";
       m.tags.forEach(function(x){ if(x==="vote")return; var c=document.createElement("span"); c.className="tag"; c.textContent="#"+x; t.appendChild(c); }); body.appendChild(t); }
     el.appendChild(body);
+    if(mentionsMe(m.text||"")) el.classList.add("tagged");   // a message that @-names you -> tint the row
     if(agentNames[m.sender]) speak(m.sender, m.text);
     var nearBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 140;
     msgs.appendChild(el);
