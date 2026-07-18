@@ -154,11 +154,22 @@ def roster_remove(name):
     write_roster_list([i for i in read_roster_list() if i.get("name") != name])
 
 
+CREW_LOCK = threading.Lock()   # serializes read-modify-write of run.pids across add/kick/respawn
+
+
 def kill_pid(pid):
+    """Stop a crew member AND its process tree. An in-flight model call is a CHILD of the
+    watcher -- killing only the watcher orphans that call for up to the full reply timeout.
+    Windows: verify the pid still belongs to python.exe (pid-recycling guard), then /T the
+    whole tree. POSIX: single-pid SIGTERM only (the server shares the process group, so a
+    killpg would take the board down with it; children may briefly outlive the watcher)."""
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/PID", str(pid), "/FI", "IMAGENAME eq python.exe"],
-                           capture_output=True)
+            chk = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True)
+            if "python.exe" not in (chk.stdout or ""):
+                return                       # recycled or already gone -- never tree-kill a stranger
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
         else:
             os.kill(pid, 15)
     except Exception:
@@ -559,14 +570,15 @@ class Handler(BaseHTTPRequestHandler):
             name = data.get("agent", "")
             if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
                 return self._send_json({"error": "bad agent name"}, 400)
-            crew = read_crew()
-            in_roster = any(i.get("name") == name for i in read_roster_list())
-            if name == "board" or (name not in crew and not in_roster):
-                return self._send_json({"error": "no such agent"}, 404)
-            if name in crew:
-                kill_pid(crew.pop(name))
-                write_crew(crew)
-            roster_remove(name)   # drop from the persisted lineup so a restart won't bring it back
+            with CREW_LOCK:       # serialize the run.pids read-modify-write vs add/respawn
+                crew = read_crew()
+                in_roster = any(i.get("name") == name for i in read_roster_list())
+                if name == "board" or (name not in crew and not in_roster):
+                    return self._send_json({"error": "no such agent"}, 404)
+                if name in crew:
+                    kill_pid(crew.pop(name))
+                    write_crew(crew)
+                roster_remove(name)   # drop from the persisted lineup so a restart won't bring it back
             return self._send_json({"ok": True, "kicked": name})
         if route.path == "/control/clear":
             if not self.control:
@@ -646,18 +658,19 @@ class Handler(BaseHTTPRequestHandler):
             name = re.sub(r"[^a-z0-9_-]", "", p.name.lower())
             if not name:
                 return self._send_json({"error": "cannot derive an agent name from that folder"}, 400)
-            crew = read_crew()
-            if name == "board" or name in crew:
-                return self._send_json({"error": "an agent named '%s' is already here" % name}, 409)
-            # fixed command, folder as a validated list-arg -> no shell, no injection. The agent
-            # inherits this board's URL + live flag from the environment (see docs/SECURITY.md).
-            env = dict(os.environ)
-            env["FLEETCHAT_AGENT_DIR"] = str(p)
-            proc = subprocess.Popen([sys.executable, str(REPO / "agents" / "run_agent.py"),
-                                     name, "--dir", str(p)], env=env)
-            crew[name] = proc.pid
-            write_crew(crew)
-            roster_add(name, str(p))   # persist to the lineup so a restart re-launches it
+            with CREW_LOCK:       # serialize the run.pids read-modify-write vs kick/respawn
+                crew = read_crew()
+                if name == "board" or name in crew:
+                    return self._send_json({"error": "an agent named '%s' is already here" % name}, 409)
+                # fixed command, folder as a validated list-arg -> no shell, no injection. The agent
+                # inherits this board's URL + live flag from the environment (see docs/SECURITY.md).
+                env = dict(os.environ)
+                env["FLEETCHAT_AGENT_DIR"] = str(p)
+                proc = subprocess.Popen([sys.executable, str(REPO / "agents" / "run_agent.py"),
+                                         name, "--dir", str(p)], env=env)
+                crew[name] = proc.pid
+                write_crew(crew)
+                roster_add(name, str(p))   # persist to the lineup so a restart re-launches it
             return self._send_json({"ok": True, "added": name})
         if route.path == "/control/respawn":
             if not self.control:
@@ -668,23 +681,24 @@ class Handler(BaseHTTPRequestHandler):
             name = data.get("agent", "")
             if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
                 return self._send_json({"error": "bad agent name"}, 400)
-            crew = read_crew()
-            entry = next((i for i in read_roster_list() if i.get("name") == name), None)
-            if name == "board" or (name not in crew and entry is None):
-                return self._send_json({"error": "no such agent"}, 404)
-            if name in crew:                       # running -> stop the current turn before relaunch
-                kill_pid(crew.pop(name))
-            # Relaunch with the SAME fixed list-arg Popen /control/add uses (no shell). The optional
-            # project folder comes from the persisted roster entry; without one it launches bare.
-            folder = entry.get("dir") if entry else None
-            args = [sys.executable, str(REPO / "agents" / "run_agent.py"), name]
-            env = dict(os.environ)
-            if folder:
-                args += ["--dir", str(folder)]
-                env["FLEETCHAT_AGENT_DIR"] = str(folder)
-            proc = subprocess.Popen(args, env=env)
-            crew[name] = proc.pid
-            write_crew(crew)
+            with CREW_LOCK:       # serialize the run.pids read-modify-write vs add/kick
+                crew = read_crew()
+                entry = next((i for i in read_roster_list() if i.get("name") == name), None)
+                if name == "board" or (name not in crew and entry is None):
+                    return self._send_json({"error": "no such agent"}, 404)
+                if name in crew:                   # running -> stop the watcher AND its process tree
+                    kill_pid(crew.pop(name))
+                # Relaunch with the SAME fixed list-arg Popen /control/add uses (no shell). The optional
+                # project folder comes from the persisted roster entry; without one it launches bare.
+                folder = entry.get("dir") if entry else None
+                args = [sys.executable, str(REPO / "agents" / "run_agent.py"), name]
+                env = dict(os.environ)
+                if folder:
+                    args += ["--dir", str(folder)]
+                    env["FLEETCHAT_AGENT_DIR"] = str(folder)
+                proc = subprocess.Popen(args, env=env)
+                crew[name] = proc.pid
+                write_crew(crew)
             return self._send_json({"ok": True, "respawned": name, "pid": proc.pid})
         if route.path == "/control/pick":
             if not self.control:
