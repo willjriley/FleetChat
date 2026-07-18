@@ -9,7 +9,9 @@ Python standard library.
 
 SECURITY BY CONSTRUCTION (see ../docs/SECURITY.md):
   - Binds to 127.0.0.1 by default. A default FleetChat is a SEALED LOCAL fleet:
-    nothing sits on the network, so there is nothing to attack.
+    nothing is reachable from another machine. A browser on the SAME machine still
+    can reach loopback, though -- that's why cross-origin writes are gated too
+    (see _origin_ok below).
   - Going cross-host is a single, explicit opt-in. Binding to any non-loopback
     address REQUIRES a shared token -- this server REFUSES to start otherwise.
     The switch that exposes the port is the same switch that turns on the gate;

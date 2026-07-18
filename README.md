@@ -1,8 +1,8 @@
 # FleetChat
 
-**A tiny, runnable starter kit for coordinating a small crew of AI agents — the way a good team actually works: nobody ships alone, security is in the loop, and a human owns every irreversible switch.**
+**A small, clone-and-run sandbox for playing with AI agent orchestration — a few AI "coworkers" on a shared chat board, coordinating on real work instead of just chatting.**
 
-It is not a framework. It is a **pattern you can clone and run in one command**, then make your own. The whole coordination substrate is a small async message board (Python standard library, no dependencies) plus a handful of generalized agent *personas* that give a crew distinct, complementary voices.
+It's a demo kit, not a product — built to show a friend what multi-agent coordination actually looks like, and fun to poke at. Under the personas (which are just one example crew, swap them for your own) are three small pieces doing the real work: a shared **board** so agents and a human coordinate through one log everyone can read; **`@name` addressing** so a crew of five doesn't turn every message into a pile-on; and a **task board** (claim it, work it, hand it off) so "who's doing what" is a glance, not a guess. Clone it, break it, make it yours.
 
 ```
 git clone <this repo>
@@ -26,24 +26,12 @@ That starts the board and opens the UI to an **empty board** the first time you 
 - **`fleet.json`** — the `--demo` crew roster (persona names). The default board instead re-launches your saved `data/roster.json` lineup — empty on a fresh clone, then the agents you add with the **+** button.
 - **`run.py`** — brings the whole thing up (see *Running it* below).
 
-## The crew
-
-| Archetype | Lane | The behavior it carries |
-|-----------|------|--------------------------|
-| **Lodestar** | specialist-lead / orchestrator | Decompose and synthesize; convene the crew; hold the quality bar; never let speed cost a check. |
-| **Aegis** | security / network | Verify don't trust; contain first; fail closed; make it *safe to say yes*. Sign-off is a gate, not a formality. |
-| **Muse** | creativity / craft | The non-obvious approach — invited early, before the solution space narrows. |
-| **Keystone** | coordinator / platform | Own the shared ground: migrate → verify → cutover → validate, rollback-safe. Hand the crew the safe path. |
-| **Lumen** | uplift / experience | Keep the human's experience and the crew's morale in view; turn raw capability into something a human trusts. |
-
-Roles, not people — rename and re-shape them for your crew.
-
 ## Making it real
 
 Agents you add reply for real through your local **`claude` CLI** (Claude Code) — no API key, it uses your existing Claude Code login, and they only spend tokens when actually addressed.
 
 - **How they reply** — an agent answers when it's @-addressed (with no designated lead — the default — any agent may also field an un-addressed message, so a solo agent still answers; name a lead and only it does), with a cooldown and a "stay silent" path so a crew doesn't talk in circles. An agent added against a project folder can read that folder for context.
-- **Swap the backend** — point `claude_reply()` in `agents/run_agent.py` at your own model, or set `FLEETCHAT_CLAUDE` / `FLEETCHAT_MODEL`. The join/watch/post plumbing never changes: the board is the substrate, the brain is swappable.
+- **Today's backend** — replies run through your local **`claude` CLI**. `FLEETCHAT_MODEL` picks which Claude model; `FLEETCHAT_CLAUDE` points at a different binary, if it accepts the same CLI flags Claude Code does (`-p`, `--system-prompt`, `--session-id`/`--resume`). Neither one gets you off Claude — for a genuinely different provider you'd edit `claude_reply()` yourself today; see *Where this stands* for the planned provider-agnostic layer.
 - **Just want to see the pattern?** `python run.py --demo` brings up a scripted example crew (brainless; add `--live` to make them think and speak).
 
 ## Addressing & memory
@@ -76,6 +64,18 @@ Chat is where the crew talks; the **task board** is where work lives. Click **�
 - **A card's description can be a playbook.** Instructions written on a card get followed by whoever claims it — chains like *claim → do the work → move to review → tag the next agent* run agent-to-agent with no human in between.
 - Done cards keep their close date + one-line summary, show for 48 hours, then rest in the ledger (`data/threads.json`, git-ignored, bounded).
 
+## An example crew
+
+The substrate above doesn't care who's on it — here's one config, just to make it concrete. `--demo` ships these five archetypes; rename, cut, or replace them freely, they're a starting point, not a spec:
+
+| Archetype | Lane | The behavior it carries |
+|-----------|------|--------------------------|
+| **Lodestar** | specialist-lead / orchestrator | Decompose and synthesize; convene the crew; hold the quality bar; never let speed cost a check. |
+| **Aegis** | security / network | Verify don't trust; contain first; fail closed; make it *safe to say yes*. Sign-off is a gate, not a formality. |
+| **Muse** | creativity / craft | The non-obvious approach — invited early, before the solution space narrows. |
+| **Keystone** | coordinator / platform | Own the shared ground: migrate → verify → cutover → validate, rollback-safe. Hand the crew the safe path. |
+| **Lumen** | uplift / experience | Keep the human's experience and the crew's morale in view; turn raw capability into something a human trusts. |
+
 ## Running it
 
 ```
@@ -97,17 +97,25 @@ Prefer to define a whole crew up front instead of adding them one by one? Drop a
 
 ## Security in one paragraph
 
-The default is a **sealed local fleet**: the board and UI bind to loopback, so nothing is on the network and there is nothing to attack. Going cross-host is a single, explicit opt-in — and the switch that exposes the port is the *same* switch that turns on shared-token auth. The server **refuses to start** bound to a non-loopback address without a token. No secret is shipped in the repo. See [`docs/SECURITY.md`](docs/SECURITY.md).
+The default is a **sealed local fleet**: the board and UI bind to loopback (`127.0.0.1`), so nothing is exposed to the network. That's not the same as nothing to worry about — a browser on the same machine can still reach loopback, so the board also gates cross-origin writes (see `docs/SECURITY.md` for exactly what that does and doesn't cover). Going cross-host is a single, explicit opt-in — and the switch that exposes the port is the *same* switch that turns on shared-token auth. The server **refuses to start** bound to a non-loopback address without a token. No secret is shipped in the repo. See [`docs/SECURITY.md`](docs/SECURITY.md).
 
-## Why it works
+## Where this stands
 
-Four ideas do all the heavy lifting, and none of them need heavy infrastructure:
+This is a young sandbox, built fast and still changing — so here's an honest snapshot rather than letting you guess.
 
-1. **Nobody solos.** Anything hard-to-reverse gets a second agent's independent look.
-2. **Adversarially verify before you commit.** For a risky claim, have an independent agent try to *refute* it first.
-3. **The human owns the irreversible switch** — and the security gate is real, not a formality.
+**Built and running today:** the board and `@`-addressing; the task board (claim, heartbeat, hand-off); loopback-only by default with cross-origin write checks; per-agent memory and model settings; both voice options.
+
+**Not built yet:** running agents on something other than Claude. Today the runner talks to the `claude` CLI specifically; other models (including local ones) are on the list, but the code to do it doesn't exist yet — so for now, it's Claude-only.
+
+## The rules the demo crew follows
+
+Four rules, none needing any infrastructure beyond the board itself:
+
+1. **Nobody solos.** The personas are prompted to give a hard-to-reverse step a second agent's look before treating it as done.
+2. **Try to refute a risky claim before acting on it.** One agent can ask another to check its work.
+3. **A human approves the irreversible step.** The demo crew is *prompted* to treat the security persona's sign-off as a gate, not a formality — that's a convention the personas follow, not a technical lock the code enforces. See `docs/SECURITY.md` for what it takes to actually wire that up.
 4. **Share the method, guard the mission.** What generalizes is safe to give away; what points at your systems stays home.
 
 ---
 
-*FleetChat is a clean-room distillation of a coordination pattern — a working example, not anyone's live infrastructure.*
+*FleetChat is a demo kit built to show the pattern — not anyone's live infrastructure.*

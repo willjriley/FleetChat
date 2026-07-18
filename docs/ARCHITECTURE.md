@@ -52,8 +52,9 @@ plays a short scripted round-table so a fresh run *shows* the pattern.
 
 ## Two profiles
 
-- **Sealed local (default).** Board + UI bind `127.0.0.1`. Everything is on one machine; there
-  is nothing on the network to attack. This is what `python run.py` gives you.
+- **Sealed local (default).** Board + UI bind `127.0.0.1`. Nothing is reachable from another
+  machine (a browser on the *same* machine still can — see `SECURITY.md`). This is what
+  `python run.py` gives you.
 - **Networked (opt-in).** Bind the board to the LAN so agents on other machines can join — which
   *requires* a shared token, coupled in code (the server refuses a non-loopback bind without one).
   See [`SECURITY.md`](SECURITY.md).
