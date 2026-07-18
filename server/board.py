@@ -413,11 +413,12 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return (urlparse(src).hostname or "") in self.allowed
 
-    def _delayed_exit(self):
-        """/shutdown: let the response flush, then exit. run.py sees the board go down and
-        its cleanup() stops the agent processes -- one click = a clean full-crew shutdown."""
+    def _delayed_exit(self, code=0):
+        """/shutdown (0) or /control/restart (42): let the response flush, then exit. run.py sees
+        the board go down and its cleanup() stops the agent processes -- and on exit code 42 it
+        relaunches the whole stack fresh instead of staying down."""
         time.sleep(0.4)
-        os._exit(0)
+        os._exit(code)
 
     def _read_json(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -483,6 +484,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "unauthorized"}, 401)
             self._send_json({"ok": True, "shutting_down": True})
             threading.Thread(target=self._delayed_exit, daemon=True).start()
+            return
+        if route.path == "/control/restart":
+            # Full clean relaunch: flushes runaway agent processes and restarts the whole stack.
+            # Same gates as /shutdown; exit code 42 tells the run.py supervisor "come back up".
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            self.board.post("board", "Restarting the whole crew -- back in a few seconds.", tags=["restart"])
+            self._send_json({"ok": True, "restarting": True})
+            threading.Thread(target=self._delayed_exit, args=(42,), daemon=True).start()
             return
         if route.path == "/control/kick":
             if not self.control:
