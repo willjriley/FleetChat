@@ -200,7 +200,9 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
               "markdown / `code` / links are fine. NEVER invent facts, status, or numbers you can't "
               "confirm from the messages above -- if asked something specific you don't actually know, "
               "say you'll check or defer to the lead rather than "
-              "guessing. But if another member is clearly better placed and "
+              "guessing. And NEVER claim work is done or delivered without naming its receipt -- a "
+              "message id, PR number, file path, or command output; if you have no receipt, say so "
+              "plainly. But if another member is clearly better placed and "
               "you'd just be echoing, reply with exactly: PASS and nothing else. Don't all pile on -- "
               "one or two good replies beat five.")
     base = [CLAUDE, "-p", prompt, "--system-prompt", persona[:6000]]
@@ -273,6 +275,10 @@ def main(name):
     # queue below collapses any backlog into ONE turn, so resuming can't churn claude calls.
     # A huge gap (>100 msgs) falls back to the join point -- that's a fresh start, not a restart.
     last = int(joined.get("id", 0)) if isinstance(joined, dict) else 0
+    # Headful watermark: the highest message id already shown to a resumed (memory) session. Starts
+    # at our own join id and advances to `last` after each engage, so a memory agent's later turns
+    # get ONLY messages new since its previous turn (a resumed session already holds the rest).
+    last_engaged_upto = last
     seenf = REPO / "data" / ("seen-%s.json" % cfg["id"])
     if seenf.is_file():
         try:
@@ -314,18 +320,29 @@ def main(name):
                 pass
 
     def engage(anchor_id):
-        nonlocal last_reply
+        nonlocal last_reply, last_engaged_upto
         # memory mode is read FRESH here, so a toggle takes effect on the next engage
         sid = agent_session_id(cfg["id"]) if in_memory_mode(cfg["id"]) else None
-        # Context is ANCHORED at the oldest unanswered trigger -- never a blind newest-tail
-        # slice -- so a slow turn can't scroll its own trigger (or a crossing reply, or a
-        # memory-mode gap) out of view. Floor keeps the old minimum; cap bounds mega-bursts.
         allm = board.messages(0)
-        idx = next((i for i, x in enumerate(allm) if x["id"] >= anchor_id), max(len(allm) - 1, 0))
-        window = allm[max(0, idx - 3):]
-        floor = 4 if sid else 12
-        if len(window) < floor:
-            window = allm[-floor:]
+        if sid and mem_state.get("made"):
+            # Minimal headful injection: a resumed session ALREADY holds everything shown in its
+            # prior turns -- re-injecting the anchored cushion would just duplicate it. Feed ONLY
+            # what's strictly new since this session's last turn (cap only; no cushion, no floor).
+            window = [x for x in allm if x["id"] > last_engaged_upto]
+        elif sid:
+            # First turn of this process's memory session: one catch-up slice to orient it on
+            # recent activity before it switches to strictly-new-only above.
+            window = allm[-30:]
+        else:
+            # Stateless (no memory): a fresh brain holds nothing, so ANCHOR the window at the oldest
+            # unanswered trigger (never a blind newest-tail slice) so a slow turn can't scroll its
+            # own trigger out of view. Floor keeps a recent-context minimum (env-tunable); cap bounds
+            # mega-bursts.
+            idx = next((i for i, x in enumerate(allm) if x["id"] >= anchor_id), max(len(allm) - 1, 0))
+            window = allm[max(0, idx - 3):]
+            floor = int(os.environ.get("FLEETCHAT_CTX_BUDGET", "12") or "12")
+            if len(window) < floor:
+                window = allm[-floor:]
         window = window[-60:]
         text = "\n".join((x["sender"] + ": " + x["text"]) for x in window)
         stop = threading.Event()
@@ -342,6 +359,7 @@ def main(name):
             stop.set()
             board.set_typing(cfg["id"], False)
         last_reply = time.time()  # cool down after EVERY engage (even a PASS) so a burst
+        last_engaged_upto = last  # advance the headful watermark after every turn (reply or PASS)
         if reply:                 # can't rapid-fire claude / flicker the typing …
             post_with_retry(reply)
 
@@ -358,7 +376,9 @@ def main(name):
                     if line:
                         board.post(cfg["id"], line)
             try:
-                seenf.write_text(json.dumps({"last": last}), encoding="utf-8")
+                # pending un-engaged: park the pointer just below the oldest trigger so a mid-engage crash re-sees it
+                mark = (pending[0]["id"] - 1) if pending else last
+                seenf.write_text(json.dumps({"last": mark}), encoding="utf-8")
             except Exception:
                 pass
             if LIVE and pending:
