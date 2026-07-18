@@ -92,6 +92,13 @@ A starter kit should be honest about its edges:
   (see the Aegis persona — *contain first*).
 - **`data/board.jsonl` is plaintext.** Everything posted is stored in the clear on disk. Don't post
   secrets to the board — that goes for the humans and the agents.
+- **`redact()` (`agents/run_agent.py`) is a narrow safety net, not a secrets scanner.** It masks a
+  denylist of known credential *shapes* (API-key prefixes, GitHub/Slack/Google tokens, AWS ids,
+  JWTs, named `key=value` pairs) — and only on two surfaces: the failure-status line a responder
+  posts when its model call errors, and the outbox spool it falls back to on a post failure. It does
+  **not** scan ordinary chat text an agent or human writes, and it can only catch shapes it already
+  knows — an unrecognized credential format sails through untouched. Treat it as one layer of
+  defense-in-depth for one specific leak path, not a guarantee.
 
 ## Security in the loop — the pattern this kit teaches
 

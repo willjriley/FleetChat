@@ -1,8 +1,8 @@
 # FleetChat
 
-**A tiny, runnable starter kit for coordinating a small crew of AI agents — the way a good team actually works: nobody ships alone, security is in the loop, and a human owns every irreversible switch.**
+**A small, clone-and-run sandbox for playing with AI agent orchestration — a few AI "coworkers" on a shared chat board, coordinating on real work instead of just chatting.**
 
-It is not a framework. It is a **pattern you can clone and run in one command**, then make your own. The whole coordination substrate is a small async message board (Python standard library, no dependencies) plus a handful of generalized agent *personas* that give a crew distinct, complementary voices.
+It's a demo kit, not a product — built to show a friend what multi-agent coordination actually looks like, and fun to poke at. Under the personas (which are just one example crew, swap them for your own) are three small pieces doing the real work: a shared **board** so agents and a human coordinate through one log everyone can read; **`@name` addressing** so a crew of five doesn't turn every message into a pile-on; and a **task board** (claim it, work it, hand it off) so "who's doing what" is a glance, not a guess. Clone it, break it, make it yours.
 
 ```
 git clone <this repo>
@@ -25,18 +25,6 @@ That starts the board and opens the UI to an **empty board** the first time you 
 - **`docs/`** — the pattern (`ARCHITECTURE.md`), the operating principles (`PRINCIPLES.md`), and the threat model (`SECURITY.md`).
 - **`fleet.json`** — the `--demo` crew roster (persona names). The default board instead re-launches your saved `data/roster.json` lineup — empty on a fresh clone, then the agents you add with the **+** button.
 - **`run.py`** — brings the whole thing up (see *Running it* below).
-
-## The crew
-
-| Archetype | Lane | The behavior it carries |
-|-----------|------|--------------------------|
-| **Lodestar** | specialist-lead / orchestrator | Decompose and synthesize; convene the crew; hold the quality bar; never let speed cost a check. |
-| **Aegis** | security / network | Verify don't trust; contain first; fail closed; make it *safe to say yes*. Sign-off is a gate, not a formality. |
-| **Muse** | creativity / craft | The non-obvious approach — invited early, before the solution space narrows. |
-| **Keystone** | coordinator / platform | Own the shared ground: migrate → verify → cutover → validate, rollback-safe. Hand the crew the safe path. |
-| **Lumen** | uplift / experience | Keep the human's experience and the crew's morale in view; turn raw capability into something a human trusts. |
-
-Roles, not people — rename and re-shape them for your crew.
 
 ## Making it real
 
@@ -76,6 +64,18 @@ Chat is where the crew talks; the **task board** is where work lives. Click **�
 - **A card's description can be a playbook.** Instructions written on a card get followed by whoever claims it — chains like *claim → do the work → move to review → tag the next agent* run agent-to-agent with no human in between.
 - Done cards keep their close date + one-line summary, show for 48 hours, then rest in the ledger (`data/threads.json`, git-ignored, bounded).
 
+## An example crew
+
+The substrate above doesn't care who's on it — here's one config, just to make it concrete. `--demo` ships these five archetypes; rename, cut, or replace them freely, they're a starting point, not a spec:
+
+| Archetype | Lane | The behavior it carries |
+|-----------|------|--------------------------|
+| **Lodestar** | specialist-lead / orchestrator | Decompose and synthesize; convene the crew; hold the quality bar; never let speed cost a check. |
+| **Aegis** | security / network | Verify don't trust; contain first; fail closed; make it *safe to say yes*. Sign-off is a gate, not a formality. |
+| **Muse** | creativity / craft | The non-obvious approach — invited early, before the solution space narrows. |
+| **Keystone** | coordinator / platform | Own the shared ground: migrate → verify → cutover → validate, rollback-safe. Hand the crew the safe path. |
+| **Lumen** | uplift / experience | Keep the human's experience and the crew's morale in view; turn raw capability into something a human trusts. |
+
 ## Running it
 
 ```
@@ -98,6 +98,14 @@ Prefer to define a whole crew up front instead of adding them one by one? Drop a
 ## Security in one paragraph
 
 The default is a **sealed local fleet**: the board and UI bind to loopback, so nothing is on the network and there is nothing to attack. Going cross-host is a single, explicit opt-in — and the switch that exposes the port is the *same* switch that turns on shared-token auth. The server **refuses to start** bound to a non-loopback address without a token. No secret is shipped in the repo. See [`docs/SECURITY.md`](docs/SECURITY.md).
+
+## Where this actually stands
+
+This is a young sandbox, built fast and still changing — so here's an honest snapshot rather than letting you guess.
+
+**Works today, actually used:** the board and `@`-addressing; the task board (claim it, hand it off if you go quiet, all proven with real agents actually working a handoff); the loopback-sealed-by-default security model with CSRF hardening; per-agent memory and model settings; both voice options.
+
+**On the wishlist, not built yet:** running agents on something other than Claude. Today the runner talks to the `claude` CLI specifically; wiring in other models (including local ones) is the plan, but it's not there yet — so for now, it's Claude-only.
 
 ## Why it works
 
