@@ -214,6 +214,35 @@ def memory_write(agent, on):
     return {k: bool(v) for k, v in mem.items()}
 
 
+# --------------------------------------------------------------------------- #
+# Per-agent CLI-model override -- same shape as the memory toggle: persisted in
+# data/settings.json, read FRESH each cycle by the runner, so a change here
+# takes effect on an agent's NEXT turn with no restart (unlike FLEETCHAT_MODEL,
+# a module-level env var baked in once at process start).
+# --------------------------------------------------------------------------- #
+def model_read():
+    """{name: model_id} for every agent with an override set."""
+    m = _settings_read().get("model")
+    return {k: str(v) for k, v in m.items() if v} if isinstance(m, dict) else {}
+
+
+def model_write(agent, model):
+    """Set (or, given an empty string, clear) one agent's model override."""
+    data = _settings_read()
+    m = data.get("model")
+    if not isinstance(m, dict):
+        m = {}
+    model = str(model or "").strip()
+    if model:
+        m[agent] = model
+    else:
+        m.pop(agent, None)
+    data["model"] = m
+    DATA.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {k: str(v) for k, v in m.items()}
+
+
 def tts_muted_read():
     """Board-wide TTS mute flag (settings.json). A server-side speaker reads this to decide whether
     to voice agent replies, so the UI's mute button gates the actual (server) speech, not the browser."""
@@ -226,6 +255,30 @@ def tts_muted_write(muted):
     DATA.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return bool(muted)
+
+
+VOICE_MODES = ("auto", "server-only")
+
+
+def voice_mode_read():
+    """"auto" (default) lets the browser fall back to its own voices when no server speaker has
+    heartbeated recently -- the right default for a fresh kit clone with no engine installed yet.
+    "server-only" is a hard switch for an install that KNOWS the real engine is always present
+    (e.g. one where downloading it is part of setup): the browser fallback code path goes
+    permanently inert, so the whole browser-vs-server interaction-bug class (heartbeat timing,
+    theme desync, process-supervision gaps -- every one we chased tonight) cannot exist, full stop.
+    Silence during a real speaker outage is the deliberate trade -- never a wrong voice."""
+    m = _settings_read().get("voice_mode")
+    return m if m in VOICE_MODES else "auto"
+
+
+def voice_mode_write(mode):
+    mode = mode if mode in VOICE_MODES else "auto"
+    data = _settings_read()
+    data["voice_mode"] = mode
+    DATA.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return mode
 
 
 # --------------------------------------------------------------------------- #
@@ -664,6 +717,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send_json({"error": "unauthorized"}, 401)
             return self._send_json({"memory": memory_read()})
+        if route.path == "/control/model":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"model": model_read()})
         if route.path == "/control/voices":
             # Gated exactly like /control/memory (control 404 -> authed 401). Returns the STATIC
             # v1.0 voice-pack id list plus the current per-agent assignments -- the board never
@@ -674,7 +733,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "unauthorized"}, 401)
             return self._send_json({"voices": VOICE_PACK_V1, "assigned": voices_read()})
         if route.path == "/control/tts":
-            return self._send_json({"muted": tts_muted_read(), "server": self.board.speaker_active()})
+            # DELIBERATE, reasoned widen of a shape earlier locked at {muted,server}: "mode" is a
+            # board-wide config enum, not per-agent identity, so it doesn't cross the line that
+            # shape-freeze was protecting (see docs history) -- still zero identity on this
+            # unauthenticated poll, just one more bool-shaped fact the page needs to render itself.
+            return self._send_json({"muted": tts_muted_read(), "server": self.board.speaker_active(),
+                                    "mode": voice_mode_read()})
         return self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -757,6 +821,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"error": "could not write settings: %s" % e}, 500)
             return self._send_json({"ok": True, "agent": name, "on": bool(data.get("on")), "memory": mem})
+        if route.path == "/control/model":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            name = data.get("agent", "")
+            if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
+                return self._send_json({"error": "bad agent name"}, 400)
+            raw = data.get("model", "")
+            if raw and not re.fullmatch(r"[\w.\-:/]{1,128}", str(raw)):
+                return self._send_json({"error": "model id: letters/digits/._-:/ only, max 128 chars"}, 400)
+            try:
+                mdl = model_write(name, raw)
+            except Exception as e:
+                return self._send_json({"error": "could not write settings: %s" % e}, 500)
+            return self._send_json({"ok": True, "agent": name, "model": mdl.get(name, ""), "all": mdl})
         if route.path == "/control/voice":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)
@@ -784,6 +865,8 @@ class Handler(BaseHTTPRequestHandler):
             if data.get("heartbeat"):
                 self.board.speaker_ping()          # a server speaker announcing it's alive
                 return self._send_json({"ok": True, "server": True})
+            if "mode" in data:
+                return self._send_json({"ok": True, "mode": voice_mode_write(str(data.get("mode", "")))})
             return self._send_json({"ok": True, "muted": tts_muted_write(bool(data.get("muted")))})
         if route.path == "/control/add":
             if not self.control:
