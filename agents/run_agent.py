@@ -34,6 +34,7 @@ LIVE = os.environ.get("FLEETCHAT_LIVE") == "1"
 CLAUDE = os.environ.get("FLEETCHAT_CLAUDE", "claude")
 MODEL = os.environ.get("FLEETCHAT_MODEL", "")
 COOLDOWN = 3.0
+REPLY_TIMEOUT = float(os.environ.get("FLEETCHAT_REPLY_TIMEOUT", "600"))
 
 # --------------------------------------------------------------------------- #
 # Memory mode -- an opt-in, per-agent dial that is OFF by default.            #
@@ -155,6 +156,33 @@ def should_engage(cfg, msg, ids, is_lead):
     return False
 
 
+# Redact-before-surface: runner stderr (and anything spooled to disk) can carry tokens/keys via
+# error paths -- env dumps, auth failures, curl verbose. Scrub known credential SHAPES before the
+# text leaves the runner. Deliberately narrow: bare hex (e.g. sha256 digests agents legitimately
+# quote) is NOT masked; named key=value pairs keep the key and mask only the value.
+_REDACT_TOKENS = [
+    re.compile(r"\b(?:sk|rk)-[A-Za-z0-9_-]{16,}\b"),                                # api secret keys
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),                                  # github tokens
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                            # aws key id
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),                                # slack
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),                                      # google
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\b"),  # jwt
+]
+_REDACT_KV = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|passw(?:or)?d|authorization|bearer)"
+    r"(\s*[=:]\s*)(\S{6,})")
+
+
+def redact(text):
+    """Mask credential-shaped substrings; the surrounding text survives untouched."""
+    if not text:
+        return text
+    for pat in _REDACT_TOKENS:
+        text = pat.sub("[REDACTED]", text)
+    return _REDACT_KV.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", text)
+
+
 def claude_reply(cfg, persona, context, session_id=None, state=None):
     """One headless `claude` call, persona as system prompt. Returns the reply, or None to stay
     silent. If session_id is given (memory mode), the call carries that session so the agent
@@ -178,11 +206,17 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
     if MODEL:
         base += ["--model", MODEL]
 
+    fail = {}
+
     def _run(extra):
         try:
             return subprocess.run(base + extra, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=150)
-        except Exception:
+                                  encoding="utf-8", errors="replace", timeout=REPLY_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            fail["why"] = "TIMEOUT after %ds" % REPLY_TIMEOUT
+            return None
+        except Exception as e:
+            fail["why"] = "FAILED to launch claude (%s)" % type(e).__name__
             return None
 
     if session_id:
@@ -196,7 +230,10 @@ def claude_reply(cfg, persona, context, session_id=None, state=None):
         res = _run([])                             # default: stateless, no memory
 
     if res is None or res.returncode != 0:
-        return None
+        # dead-man's-switch: never end a turn in silence -- post a terminal status instead
+        why = fail.get("why") or ("FAILED (exit %s)" % (res.returncode if res is not None else "?"))
+        err = redact(((res.stderr or "").strip()[-300:])) if res is not None else ""  # stderr can carry tokens/keys
+        return ("⚠ headless turn %s -- task NOT completed." % why) + ((" stderr tail: `%s`" % err) if err else "")
     out = (res.stdout or "").strip()
     if not out or out.upper().rstrip(".!") == "PASS":
         return None
