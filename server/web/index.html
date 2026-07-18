@@ -561,13 +561,16 @@
     {cmd:"/clear",    desc:"Clear the board history (for everyone)"},
     {cmd:"/mute",     desc:"Mute agent voices"},
     {cmd:"/unmute",   desc:"Unmute agent voices"},
+    {cmd:"/tasks",    desc:"Open the full task board (new tab)"},
+    {cmd:"/glance",   desc:"Show/hide the quick-glance task panel"},
+    {cmd:"/task",     desc:"Create a task card: /task <title>"},
     {cmd:"/restart",  desc:"Restart the server and the whole crew (flushes stuck agents)"},
     {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
     {cmd:"/help",     desc:"Show these commands"}
   ];
   // Commands that take arguments: picking them from the palette leaves a trailing space so you
   // can type the args right away (generalized from the old /poll-only special case).
-  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1};
+  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/task":1};
   var sBox=null, sItems=[], sSel=0;
   function slashOpen(){ return !!sBox; }
   function slashClose(){ if(sBox){ sBox.remove(); sBox=null; } sItems=[]; sSel=0; }
@@ -600,6 +603,13 @@
     if(text==="/clear"){ doClear(); return true; }
     if(text==="/mute"){ setMuted(true); $("#text").value=""; renderChips(); return true; }
     if(text==="/unmute"){ setMuted(false); $("#text").value=""; renderChips(); return true; }
+    if(text==="/tasks"){ $("#text").value=""; renderChips(); window.open("/tasks","_blank"); return true; }
+    if(text==="/glance"){ $("#text").value=""; renderChips(); kanbanToggle(); return true; }
+    var mtask=text.match(/^\/task\s+(.+)$/);
+    if(mtask){ $("#text").value=""; renderChips();
+      top({op:"create", title:mtask[1].slice(0,200), by:meName()});   // lands in Open; board pushes it to the panel/board
+      return true; }
+    if(/^\/task\b/.test(text)){ $("#text").value=""; renderChips(); alert("Usage: /task <title>"); return true; }
     if(text==="/restart"){ $("#text").value=""; renderChips(); restartServer(); return true; }
     if(text==="/shutdown"){ $("#text").value=""; renderChips(); shutdownServer(); return true; }
     if(text==="/help"){ showCommands(); return true; }
