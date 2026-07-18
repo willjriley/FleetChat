@@ -38,6 +38,10 @@ class Board:
 
     def _headers(self, extra=None):
         h = dict(extra or {})
+        # A pure HTML <form> (the entire CSRF attack surface) cannot set a custom header --
+        # the server's origin-check requires this on every state-changing request, so a forged
+        # cross-site form submission is refused even with no Origin/Referer of its own.
+        h["X-Fleet-Client"] = "1"
         if self.token:
             h["X-Fleet-Token"] = self.token
         return h

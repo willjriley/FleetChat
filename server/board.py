@@ -651,13 +651,30 @@ class Handler(BaseHTTPRequestHandler):
         return host_part(self.headers.get("Host", "")) in self.allowed
 
     def _origin_ok(self):
-        """Defeats CSRF-to-localhost: a browser state-change must be same-origin.
-        Non-browser clients (the join skill, curl) send no Origin/Referer and are
-        allowed -- they carry no ambient cookies a malicious page could ride."""
-        src = self.headers.get("Origin") or self.headers.get("Referer")
-        if not src:
+        """Defeats CSRF-to-localhost. FAILS CLOSED: a state-change is allowed only when at least
+        one of three independent, hard-to-forge signals says so -- absence of a header is never
+        itself proof of anything, because a bare HTML <form> (the entire CSRF surface) trivially
+        omits any header it likes.
+          1. A valid same-host Origin/Referer -- genuine browser navigation/fetch.
+          2. X-Fleet-Client -- every real client (the UI, the join skill, agents, the speaker)
+             sends this. A plain <form> POST cannot set a custom header at all; a script that
+             tries via fetch() triggers a CORS preflight this server never approves, so the
+             browser blocks the real request before it's sent.
+          3. Sec-Fetch-Site: same-origin|none -- a newer Fetch-Metadata header the BROWSER sets
+             from ground truth; no page content can spoof it into claiming same-origin falsely.
+        (Earlier shape here allowed any request with NO Origin/Referer through at all, reasoning
+        that only non-browser clients send neither -- true in 2016, not once a well-known
+        text/plain-enctype form + Referrer-Policy: no-referrer can suppress both from a real
+        browser. Closed by requiring a signal to be PRESENT, never inferring from absence.)"""
+        if self.headers.get("X-Fleet-Client"):
             return True
-        return (urlparse(src).hostname or "") in self.allowed
+        sfs = self.headers.get("Sec-Fetch-Site", "")
+        if sfs in ("same-origin", "none"):
+            return True
+        src = self.headers.get("Origin") or self.headers.get("Referer")
+        if src:
+            return (urlparse(src).hostname or "") in self.allowed
+        return False
 
     def _delayed_exit(self, code=0):
         """/shutdown (0) or /control/restart (42): let the response flush, then exit. run.py sees

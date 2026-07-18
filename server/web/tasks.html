@@ -56,7 +56,7 @@
 (function(){
   var $=function(s){return document.querySelector(s);};
   var token=localStorage.getItem("fleetchat_token")||"";
-  function headers(extra){ var h=extra||{}; if(token) h["X-Fleet-Token"]=token; return h; }
+  function headers(extra){ var h=extra||{}; h["X-Fleet-Client"]="1"; if(token) h["X-Fleet-Token"]=token; return h; }
   // The classic left-to-right lanes; Backlog = parked/someday, Open = ready to take.
   var LANES=[["backlog","Backlog"],["open","Open"],["claimed","In progress"],["review","Review"],["done","Done"]];
   var cache=[];
