@@ -47,7 +47,7 @@
 <body>
 <header>
   <h1>📋 Task board</h1>
-  <a href="/">&larr; back to the chat</a>
+  <a href="/" id="backlink">&larr; back to the chat</a>
   <span class="sp"></span>
   <button class="newbtn" id="newtask" style="display:none">+ New task</button>
 </header>
@@ -115,6 +115,15 @@
   $("#newtask").addEventListener("click", function(){
     var title=prompt("Task title:"); if(!title) return;
     op({op:"create", title:title, by:me()});
+  });
+  // "Back" must not duplicate the chat: this tab is normally OPENED BY the chat page, so back =
+  // close this tab (the original chat is still there). If /tasks was visited directly by URL,
+  // browsers block self-close -- then (and only then) the fallback navigation to "/" is correct,
+  // because no original tab exists.
+  $("#backlink").addEventListener("click", function(e){
+    e.preventDefault();
+    window.close();
+    setTimeout(function(){ location.href="/"; }, 200);  // only reached when close() was blocked
   });
   fetch("/health").then(function(r){return r.json();}).then(function(h){
     if(h && h.control) $("#newtask").style.display="";   // mutations are control-gated; hide the button when they'd 404
