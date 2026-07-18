@@ -211,6 +211,29 @@
   .md ul.findhits a:hover{text-decoration:underline}
   .msg.flash{animation:flashmsg 1.2s ease-out}
   @keyframes flashmsg{0%{background:color-mix(in srgb,var(--accent) 20%,transparent)}100%{background:transparent}}
+  /* ---------- task board (kanban): the thread-ledger's face ---------- */
+  .kanban{width:300px;border-left:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:10px;display:none}
+  .kanban.on{display:block}
+  .kanban h2{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:4px 4px 8px}
+  .lane{margin-bottom:14px}
+  .lane .lt{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 2px 6px;display:flex;align-items:center;gap:6px}
+  .lane .lt .n{background:var(--chip);border-radius:10px;padding:0 7px;font-weight:600}
+  .card{border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin:6px 0;background:var(--bg);position:relative}
+  .card.claimed{border-left:3px solid var(--accent)}
+  .card.stale{border-left:3px solid #d68910;animation:cardamber 1.6s infinite}
+  .card.done{opacity:.62}
+  @keyframes cardamber{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 2px rgba(214,137,16,.25)}}
+  .card .ct{font-size:13px;line-height:1.35;word-wrap:break-word}
+  .card .cmeta{display:flex;align-items:center;gap:5px;margin-top:6px}
+  .card .cmeta .av{width:18px;height:18px;font-size:9px}
+  .card .cage{margin-left:auto;font-size:10.5px;color:var(--muted)}
+  .card .cbtns{display:flex;gap:5px;margin-top:7px}
+  .card .cbtns button{font:inherit;font-size:11px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
+  .card .cbtns button:hover{border-color:var(--accent);color:var(--accent)}
+  .card .csum{font-size:11.5px;color:var(--muted);margin-top:5px;font-style:italic}
+  .kadd{width:calc(100% - 4px);margin:2px;font:inherit;font-size:12px;color:var(--accent);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:6px;cursor:pointer}
+  .kadd:hover{border-color:var(--accent);background:var(--chip)}
+  .kempty{font-size:11.5px;color:var(--muted);margin:2px 4px}
 </style>
 <script>
   // Apply the saved theme before first paint so there's no flash of the default palette.
@@ -223,6 +246,7 @@
   <h1>FleetChat</h1>
   <span class="conn" id="conn"></span>
   <span class="scope" id="scope"></span>
+  <button id="tasksbtn" class="ctl" title="Task board">📋 Tasks</button>
   <button id="mute" class="ctl" title="Agent voices on/off">🔊</button>
   <button id="settings" class="ctl" title="Settings">⚙</button>
   <button id="shutdown" class="ctl" style="display:none" title="Stop the server and the whole crew">Shut down</button>
@@ -242,6 +266,11 @@
       <button class="send" id="send" type="submit">Send</button>
     </form>
   </section>
+  <aside class="kanban" id="kanban">
+    <h2>Task board</h2>
+    <button class="kadd" id="kadd">+ New task</button>
+    <div id="lanes"></div>
+  </aside>
 </main>
 <script>
 (function(){
@@ -934,11 +963,75 @@
     dot.classList.remove("ok"); setConn(false);
     var sb=$("#shutdown"); if(sb) sb.style.display="none";
   }
+  // ---------- task board (kanban): the thread-ledger's face ----------
+  // Lanes mirror the ledger lifecycle; a claimed card wears its owner's avatar, a claim whose
+  // heartbeat lapsed ambers (and its button flips to Adopt), done cards dim with their summary.
+  var kanbanOn = localStorage.getItem("fleetchat_tasks")==="1", threadsCache=[];
+  var LANES=[["open","Open"],["claimed","In progress"],["review","Review"],["done","Done"]];
+  function kanbanToggle(){ kanbanOn=!kanbanOn; localStorage.setItem("fleetchat_tasks", kanbanOn?"1":"0");
+    $("#kanban").classList.toggle("on", kanbanOn); if(kanbanOn) loadThreads(); }
+  function tage(ts){ var s=(Date.now()/1000-ts); if(s<90)return "now"; if(s<3600)return Math.round(s/60)+"m";
+    if(s<86400)return Math.round(s/3600)+"h"; return Math.round(s/86400)+"d"; }
+  function meName(){ return (($("#who").value||"").trim().toLowerCase().replace(/[^a-z0-9_-]/g,"")||"you"); }
+  function top(body){
+    fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify(body)})
+      .then(function(r){ if(r.status===401){ askToken(); return null; } return r.json(); })
+      .then(function(j){ if(j&&j.error) alert(j.error); loadThreads(); })
+      .catch(function(){});
+  }
+  function renderKanban(){
+    var root=$("#lanes"); if(!root) return; root.innerHTML="";
+    LANES.forEach(function(L){
+      var lane=document.createElement("div"); lane.className="lane";
+      var items=threadsCache.filter(function(t){ return t.status===L[0]; });
+      var lt=document.createElement("div"); lt.className="lt";
+      var lb=document.createElement("span"); lb.textContent=L[1]; lt.appendChild(lb);
+      var n=document.createElement("span"); n.className="n"; n.textContent=items.length; lt.appendChild(n);
+      lane.appendChild(lt);
+      if(!items.length){ var e=document.createElement("div"); e.className="kempty"; e.textContent="—"; lane.appendChild(e); }
+      items.forEach(function(t){
+        var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
+        var ct=document.createElement("div"); ct.className="ct"; ct.textContent=t.title; c.appendChild(ct);
+        var meta=document.createElement("div"); meta.className="cmeta";
+        if(t.owner){ meta.appendChild(av(t.owner)); }
+        (t.assignees||[]).forEach(function(a){ if(a!==t.owner) meta.appendChild(av(a)); });
+        var age=document.createElement("span"); age.className="cage"; age.textContent=t.id+" · "+tage(t.updated); meta.appendChild(age);
+        c.appendChild(meta);
+        if(t.status==="done"&&t.summary){ var s=document.createElement("div"); s.className="csum"; s.textContent=t.summary; c.appendChild(s); }
+        if(controlOn && t.status!=="done"){
+          var b=document.createElement("div"); b.className="cbtns";
+          var btn=function(label,fn){ var x=document.createElement("button"); x.textContent=label; x.addEventListener("click",fn); b.appendChild(x); };
+          if(t.status==="open"||t.stale) btn(t.stale?"Adopt":"Claim", function(){ top({op:"claim", id:t.id, agent:meName()}); });
+          if(t.status==="claimed") btn("→ Review", function(){ top({op:"status", id:t.id, lane:"review"}); });
+          if(t.status==="review") btn("← Working", function(){ top({op:"status", id:t.id, lane:"claimed"}); });
+          btn("✓ Done", function(){ var s=prompt("One-line summary (optional):")||""; top({op:"close", id:t.id, summary:s}); });
+          c.appendChild(b);
+        }
+        lane.appendChild(c);
+      });
+      root.appendChild(lane);
+    });
+  }
+  function loadThreads(){
+    if(!kanbanOn) return;
+    fetch("/threads",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
+      .then(function(j){ if(j&&j.threads){ threadsCache=j.threads; renderKanban(); } })
+      .catch(function(){});
+  }
+  (function(){ var tb=$("#tasksbtn"); if(tb) tb.addEventListener("click", kanbanToggle);
+    var ka=$("#kadd"); if(ka) ka.addEventListener("click", function(){
+      var title=prompt("Task title:"); if(!title) return;
+      top({op:"create", title:title, by:meName()});
+    });
+    if(kanbanOn) $("#kanban").classList.add("on");
+  })();
+
   var pollTimer=setInterval(poll, 2000);
   var typeTimer=setInterval(loadTyping, 1200);
   var rosterTimer=setInterval(loadRoster, 4000);   // catch + Add agent / x edits to the lineup
   var ttsTimer=setInterval(loadTtsState, 5000);    // browser TTS auto-stands-down when a server speaker is live
-  poll(); loadTyping(); loadTtsState();
+  var thTimer=setInterval(loadThreads, 4000);      // task cards refresh only while the panel is open
+  poll(); loadTyping(); loadTtsState(); loadThreads();
 })();
 </script>
 <script>
