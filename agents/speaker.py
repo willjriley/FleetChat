@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -162,15 +163,22 @@ def main():
     print("[speaker] up; %d English voices; watching from id %d" % (len(ENGLISH), last), flush=True)
     agents = agent_ids()
     vmap = build_voice_map(agents)
-    last_hb, last_roster, misses = 0.0, time.time(), 0
-    while True:
-        now = time.time()
-        if now - last_hb > 10:
+
+    # Heartbeat from a DAEMON THREAD, never the main loop: the loop blocks for a whole burst's
+    # synth+playback, which would starve a loop-based heartbeat past the board's 30s TTL and flip
+    # the UI back to browser TTS mid-queue (a stray robo-voice). A thread can't starve.
+    def _hb_loop():
+        while True:
             try:
                 _post_json("/control/tts", {"heartbeat": True})   # browser TTS stands down while we're live
             except Exception:
                 pass
-            last_hb = now
+            time.sleep(8)
+    threading.Thread(target=_hb_loop, daemon=True).start()
+
+    last_roster, misses = time.time(), 0
+    while True:
+        now = time.time()
         if now - last_roster > 15:
             agents = agent_ids() or agents
             vmap = build_voice_map(agents)

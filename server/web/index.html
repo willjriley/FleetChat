@@ -129,7 +129,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false;
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false, serverSeen = 0, ttsKnown = false;
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -176,7 +176,10 @@
       .replace(/[*#_>|]/g,"").replace(/\s+/g," ").trim().slice(0,400);
   }
   function speak(sender, text){
-    if(muted || serverTts || !speakReady || !window.speechSynthesis) return;   // serverTts -> a server speaker voices it; don't double up
+    // Browser TTS is the FALLBACK: it stays silent until the server state is KNOWN (no boot race),
+    // and for 45s after the server speaker was last seen -- so a heartbeat missed mid-playback can
+    // never flip a stray robo-voice in while the server is still working a queue.
+    if(muted || !ttsKnown || serverTts || (Date.now()-serverSeen)<45000 || !speakReady || !window.speechSynthesis) return;
     var say=cleanForSpeech(text); if(!say) return;
     var u=new SpeechSynthesisUtterance(say); var v=voiceFor(sender); if(v) u.voice=v; u.rate=1.05;
     try{ speechSynthesis.speak(u); }catch(e){}
@@ -344,7 +347,7 @@
   function loadTtsState(){
     // if a server-side speaker is live, the browser TTS stands down (no double up)
     fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
-      .then(function(j){ if(j){ serverTts=!!j.server; } }).catch(function(){});
+      .then(function(j){ if(j){ ttsKnown=true; serverTts=!!j.server; if(serverTts) serverSeen=Date.now(); } }).catch(function(){});
   }
   function loadMemory(){
     // fetch the current per-agent memory flags so the book icons render lit/dim correctly
