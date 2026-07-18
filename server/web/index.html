@@ -231,6 +231,8 @@
   .card .cbtns button{font:inherit;font-size:11px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
   .card .cbtns button:hover{border-color:var(--accent);color:var(--accent)}
   .card .csum{font-size:11.5px;color:var(--muted);margin-top:5px;font-style:italic}
+  .card .cdesc{margin-left:5px;font-size:11px;color:var(--muted);cursor:pointer}
+  .card .cdesc:hover{color:var(--accent)}
   .kadd{width:calc(100% - 4px);margin:2px;font:inherit;font-size:12px;color:var(--accent);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:6px;cursor:pointer}
   .kadd:hover{border-color:var(--accent);background:var(--chip)}
   .kempty{font-size:11.5px;color:var(--muted);margin:2px 4px}
@@ -570,13 +572,16 @@
     {cmd:"/tasks",    desc:"Open the full task board (new tab)"},
     {cmd:"/glance",   desc:"Show/hide the quick-glance task panel"},
     {cmd:"/task",     desc:"Create a task card: /task <title>"},
+    {cmd:"/claim",    desc:"Claim a task card: /claim <id>"},
+    {cmd:"/done",     desc:"Close a task card: /done <id> [summary]"},
+    {cmd:"/mytasks",  desc:"List task cards you own or are assigned"},
     {cmd:"/restart",  desc:"Restart the server and the whole crew (flushes stuck agents)"},
     {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
     {cmd:"/help",     desc:"Show these commands"}
   ];
   // Commands that take arguments: picking them from the palette leaves a trailing space so you
   // can type the args right away (generalized from the old /poll-only special case).
-  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/task":1};
+  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/task":1,"/claim":1,"/done":1};
   var sBox=null, sItems=[], sSel=0;
   function slashOpen(){ return !!sBox; }
   function slashClose(){ if(sBox){ sBox.remove(); sBox=null; } sItems=[]; sSel=0; }
@@ -632,6 +637,13 @@
     var mResp=text.match(/^\/respawn\s+([a-z0-9_-]+)$/);
     if(mResp){ clearInput(); cmdRespawn(mResp[1]); return true; }
     if(/^\/respawn\b/.test(text)){ clearInput(); localNote("<p><b>/respawn</b> — usage: <code>/respawn &lt;agent&gt;</code></p>"); return true; }
+    var mClaim=text.match(/^\/claim\s+(\S+)$/);
+    if(mClaim){ clearInput(); cmdClaim(mClaim[1]); return true; }
+    if(/^\/claim\b/.test(text)){ clearInput(); localNote("<p><b>/claim</b> — usage: <code>/claim &lt;id&gt;</code> &nbsp;(e.g. <code>/claim t12</code>)</p>"); return true; }
+    var mDone=text.match(/^\/done\s+(\S+)(?:\s+([\s\S]+))?$/);
+    if(mDone){ clearInput(); cmdDone(mDone[1], (mDone[2]||"").trim()); return true; }
+    if(/^\/done\b/.test(text)){ clearInput(); localNote("<p><b>/done</b> — usage: <code>/done &lt;id&gt; [summary]</code></p>"); return true; }
+    if(text==="/mytasks"){ clearInput(); cmdMyTasks(); return true; }
     return false;
   }
   function clearInput(){ $("#text").value=""; renderChips(); slashClose(); }
@@ -811,6 +823,50 @@
         if(res.s>=400){ localNote("<p>⚠️ Couldn't respawn <b>"+esc(agent)+"</b>: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
         localNote("<p>♻️ Respawned <b>"+esc(agent)+"</b> (pid "+esc(String(res.j&&res.j.pid))+").</p>"); poll(); })
       .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to respawn.</p>"); });
+  }
+  function normTaskId(raw){ return String(raw||"").trim().toLowerCase().replace(/^#/,""); }
+  function cmdClaim(rawId){
+    // SERVER-backed: claim a card for the composer's identity (op=claim; adopts a stale claim too)
+    var id=normTaskId(rawId);
+    if(!/^t\d+$/.test(id)){ localNote("<p>⚠️ <b>"+esc(rawId)+"</b> doesn't look like a task id — try <code>/claim t12</code>.</p>"); return; }
+    fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),
+      body:JSON.stringify({op:"claim", id:id, agent:meName()})})
+      .then(function(r){ if(r.status===401){ askToken(); return null; }
+        return r.json().then(function(j){ return {s:r.status, j:j}; }); })
+      .then(function(res){ if(!res) return;
+        if(res.s>=400){ localNote("<p>⚠️ Couldn't claim <b>"+esc(id)+"</b>: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
+        var ti=res.j&&res.j.thread&&res.j.thread.title;
+        localNote("<p>✋ Claimed <b>"+esc(id)+"</b>"+(ti?" — "+esc(ti):"")+".</p>"); loadThreads(); })
+      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to claim.</p>"); });
+  }
+  function cmdDone(rawId, summary){
+    // SERVER-backed: close a card (op=close), optionally recording a one-line summary
+    var id=normTaskId(rawId);
+    if(!/^t\d+$/.test(id)){ localNote("<p>⚠️ <b>"+esc(rawId)+"</b> doesn't look like a task id — try <code>/done t12</code>.</p>"); return; }
+    fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),
+      body:JSON.stringify({op:"close", id:id, summary:summary||""})})
+      .then(function(r){ if(r.status===401){ askToken(); return null; }
+        return r.json().then(function(j){ return {s:r.status, j:j}; }); })
+      .then(function(res){ if(!res) return;
+        if(res.s>=400){ localNote("<p>⚠️ Couldn't close <b>"+esc(id)+"</b>: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
+        localNote("<p>✅ Closed <b>"+esc(id)+"</b>"+(summary?" — "+esc(summary):"")+".</p>"); loadThreads(); })
+      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to close.</p>"); });
+  }
+  function cmdMyTasks(){
+    // CLIENT-filtered over the authed ledger: cards this composer owns or is assigned to
+    var me=meName();
+    fetch("/threads",{headers:headers()})
+      .then(function(r){ if(r.status===401){ askToken(); return null; }
+        return r.status===200 ? r.json() : null; })
+      .then(function(j){ if(!j) return;
+        var mine=(j.threads||[]).filter(function(t){ return t.owner===me || (t.assignees||[]).indexOf(me)>=0; });
+        if(!mine.length){ localNote("<p>📋 No task cards owned by or assigned to <b>"+esc(me)+"</b> yet.</p>"); return; }
+        var head="<tr><th>id</th><th>title</th><th>status</th></tr>";
+        var rows=mine.map(function(t){
+          return "<tr><td><b>"+esc(t.id)+"</b></td><td>"+esc(t.title||"")+"</td><td>"+esc(t.status||"")+"</td></tr>";
+        }).join("");
+        localNote("<p>📋 <b>"+mine.length+"</b> task"+(mine.length===1?"":"s")+" for <b>"+esc(me)+"</b>:</p><table class=\"statustbl\">"+head+rows+"</table>"); })
+      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server for your tasks.</p>"); });
   }
 
   function add(m){
@@ -1015,7 +1071,14 @@
       if(!items.length){ var e=document.createElement("div"); e.className="kempty"; e.textContent="—"; lane.appendChild(e); }
       items.forEach(function(t){
         var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
-        var ct=document.createElement("div"); ct.className="ct"; ct.textContent=t.title; c.appendChild(ct);
+        var ct=document.createElement("div"); ct.className="ct"; ct.textContent=t.title;
+        if(t.desc && String(t.desc).trim()){          // detail beyond the title -> 📝 opens the full board
+          var db=document.createElement("span"); db.className="cdesc"; db.textContent="📝";
+          db.title="Has a description — open the full board";
+          db.addEventListener("click", function(e){ e.stopPropagation(); window.open("/tasks","_blank"); });
+          ct.appendChild(db);
+        }
+        c.appendChild(ct);
         var meta=document.createElement("div"); meta.className="cmeta";
         if(t.owner){ var ob=av(t.owner); ob.title="owner: "+t.owner; meta.appendChild(ob); }
         (t.assignees||[]).forEach(function(a){ if(a!==t.owner){ var ab=av(a); ab.title="assigned: "+a; meta.appendChild(ab); } });
