@@ -271,6 +271,7 @@ class Board:
         self._messages = []
         self._next_id = 1
         self._typing = {}          # agent id -> last "composing" ping ts (drives the UI's animated …)
+        self._speaking = {}        # agent id -> last "being voiced" ping ts (drives the UI's 🔊 pulse)
         self._speaker_seen = 0     # last heartbeat from a server-side TTS speaker -> browser-TTS auto-detect
         DATA.mkdir(parents=True, exist_ok=True)
         if BOARD_FILE.exists():
@@ -326,6 +327,26 @@ class Board:
         now = time.time()
         with self._lock:
             return sorted(a for a, ts in self._typing.items() if now - ts <= ttl)
+
+    def set_speaking(self, agent, on):
+        """Mark an agent's reply as being voiced right now (the 🔊 pulse in the sidebar).
+        Same bounded pattern as set_typing, sharing TYPING_CAP."""
+        with self._lock:
+            if not on:
+                self._speaking.pop(agent, None)
+                return
+            if agent not in self._speaking and len(self._speaking) >= self.TYPING_CAP:
+                now = time.time()
+                self._speaking = {a: t for a, t in self._speaking.items() if now - t <= 90}
+            if agent in self._speaking or len(self._speaking) < self.TYPING_CAP:
+                self._speaking[agent] = time.time()
+
+    def speaking_now(self, ttl=90):
+        """Ids being voiced right now; stale pings drop so a speaker that dies mid-clip
+        never leaves a 🔊 stuck on."""
+        now = time.time()
+        with self._lock:
+            return sorted(a for a, ts in self._speaking.items() if now - ts <= ttl)
 
     def clear(self):
         """Wipe the board history -- in-memory + the JSONL. _next_id keeps climbing so message ids
@@ -430,7 +451,10 @@ class Handler(BaseHTTPRequestHandler):
         if route.path == "/typing":
             if not self._authed():
                 return self._send_json({"error": "unauthorized"}, 401)
-            return self._send_json({"typing": self.board.typing_now()})
+            # per-agent activity detail rides ONLY this authed view; the public GET /control/tts
+            # stays frozen at {muted, server} (two bools, no identity)
+            return self._send_json({"typing": self.board.typing_now(),
+                                    "speaking": self.board.speaking_now()})
         if route.path == "/roster":
             return self._send_json({"roster": read_roster()})
         if route.path == "/control/memory":
@@ -576,7 +600,10 @@ class Handler(BaseHTTPRequestHandler):
             agent = (data.get("agent") or "").strip()
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", agent):
                 return self._send_json({"error": "bad agent"}, 400)
-            self.board.set_typing(agent, bool(data.get("on")))
+            if data.get("what") == "speak":     # a TTS speaker marking whose reply it is voicing
+                self.board.set_speaking(agent, bool(data.get("on")))
+            else:
+                self.board.set_typing(agent, bool(data.get("on")))
             return self._send_json({"ok": True, "agent": agent, "on": bool(data.get("on"))})
         if route.path != "/post":
             return self._send_json({"error": "not found"}, 404)

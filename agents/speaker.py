@@ -192,8 +192,18 @@ def main():
                 txt = clean(m.get("text", ""))
                 if not txt or is_muted():
                     continue
-                samples, sr = kokoro.create(txt, voice=vmap.get(s) or ENGLISH[0], speed=1.0, lang="en-us")
-                play(samples, sr)
+                try:      # 🔊 pulse: tell the board whose reply is being voiced (authed view only)
+                    _post_json("/typing", {"agent": s, "on": True, "what": "speak"})
+                except Exception:
+                    pass
+                try:
+                    samples, sr = kokoro.create(txt, voice=vmap.get(s) or ENGLISH[0], speed=1.0, lang="en-us")
+                    play(samples, sr)
+                finally:
+                    try:
+                        _post_json("/typing", {"agent": s, "on": False, "what": "speak"})
+                    except Exception:
+                        pass
             misses = 0
         except Exception:
             misses += 1
