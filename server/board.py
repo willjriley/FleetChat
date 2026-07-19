@@ -245,6 +245,66 @@ def model_write(agent, model):
     return {k: str(v) for k, v in m.items()}
 
 
+# --------------------------------------------------------------------------- #
+# Per-agent CLI invocation template -- for pointing an agent at a CLI that     #
+# isn't Claude-Code-shaped. Same live, no-restart pattern as model overrides:  #
+# persisted in settings.json, read fresh every engage. A template is a LIST OF #
+# ARGV TOKENS (never a shell string) with {bin}/{prompt}/{persona}/{model}     #
+# placeholders substituted per-token, then executed via subprocess's list form #
+# (shell=False) -- the same parameterization SQL prepared statements use:      #
+# structure (which token is a flag) and data (chat content) never share a      #
+# channel a parser could conflate, so no substituted value -- however it's     #
+# been crafted -- can ever be reinterpreted as another flag or shell syntax.   #
+# v1 is intentionally narrow: stateless only (no --resume/--session-id -- see  #
+# agent_model's docstring in run_agent.py for why memory mode doesn't apply    #
+# here yet), and {prompt} is required so an agent can never be left mute.      #
+# --------------------------------------------------------------------------- #
+CLI_TEMPLATE_TOKEN_RE = re.compile(r"^[^\x00-\x1f]{1,4096}$")   # any char but control chars; generous length
+
+
+def cli_template_read():
+    """{name: [tokens...]} for every agent with a custom CLI invocation set."""
+    t = _settings_read().get("cli_template")
+    if not isinstance(t, dict):
+        return {}
+    out = {}
+    for k, v in t.items():
+        if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+            out[k] = v
+    return out
+
+
+def cli_template_write(agent, tokens):
+    """Set (or, given an empty list, clear) one agent's CLI template. Validates: a list of
+    strings, {prompt} present as its OWN token (so the agent can never be silently muted),
+    each token charset/length-bounded. Returns (result_map, error) -- error is None on success."""
+    if tokens:
+        if not (isinstance(tokens, list) and all(isinstance(x, str) for x in tokens)):
+            return None, "template must be a list of strings (one argv token each)"
+        if "{prompt}" not in tokens:
+            # Substitution (run_agent.py) is an EXACT-token dict lookup, never a substring
+            # replace -- a token like "-p={prompt}" is not the key "{prompt}", so it would
+            # survive substitution unchanged and the real prompt would never reach the agent.
+            # This check has to require the same exactness the substitution actually uses,
+            # or "validated" and "will actually substitute" silently diverge.
+            return None, "template must include {prompt} as its own token (not glued to another flag)"
+        for x in tokens:
+            if not CLI_TEMPLATE_TOKEN_RE.match(x):
+                return None, "a token is empty, over 4096 chars, or has a control character"
+    data = _settings_read()
+    t = data.get("cli_template")
+    if not isinstance(t, dict):
+        t = {}
+    if tokens:
+        t[agent] = list(tokens)
+    else:
+        t.pop(agent, None)
+    data["cli_template"] = t
+    DATA.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {k: list(v) for k, v in t.items()}, None
+
+
 def tts_muted_read():
     """Board-wide TTS mute flag (settings.json). A server-side speaker reads this to decide whether
     to voice agent replies, so the UI's mute button gates the actual (server) speech, not the browser."""
@@ -742,6 +802,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send_json({"error": "unauthorized"}, 401)
             return self._send_json({"model": model_read()})
+        if route.path == "/control/clitemplate":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"cli_template": cli_template_read()})
         if route.path == "/control/voices":
             # Gated exactly like /control/memory (control 404 -> authed 401). Returns the STATIC
             # v1.0 voice-pack id list plus the current per-agent assignments -- the board never
@@ -906,6 +972,22 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"error": "could not write settings: %s" % e}, 500)
             return self._send_json({"ok": True, "agent": name, "model": mdl.get(name, ""), "all": mdl})
+        if route.path == "/control/clitemplate":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            data = self._read_json() or {}
+            name = data.get("agent", "")
+            if not re.fullmatch(r"[a-z0-9_-]+", name or ""):
+                return self._send_json({"error": "bad agent name"}, 400)
+            tokens = data.get("tokens", [])
+            if not isinstance(tokens, list):
+                return self._send_json({"error": "tokens must be a list (empty list clears it)"}, 400)
+            tpl, err = cli_template_write(name, tokens)
+            if err:
+                return self._send_json({"error": err}, 400)
+            return self._send_json({"ok": True, "agent": name, "tokens": tpl.get(name, []), "all": tpl})
         if route.path == "/control/voice":
             if not self.control:
                 return self._send_json({"error": "control not enabled"}, 404)

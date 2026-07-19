@@ -101,6 +101,17 @@ A starter kit should be honest about its edges:
   **not** scan ordinary chat text an agent or human writes, and it can only catch shapes it already
   knows — an unrecognized credential format sails through untouched. Treat it as one layer of
   defense-in-depth for one specific leak path, not a guarantee.
+- **A custom per-agent CLI template's `shell=False` guarantee has one Windows asterisk.** Chat
+  content substituted into a template's `{prompt}`/`{persona}` tokens can't be reinterpreted as a
+  flag or shell syntax — each token is passed as its own opaque `argv` element, never built as a
+  shell string. That holds airtight on POSIX. On Windows, if a template's `{bin}` resolves to a
+  `.cmd`/`.bat` shim rather than a real `.exe` (the stock Claude Code CLI installed via npm is one:
+  `claude.cmd`), Python's `subprocess` has to route through `cmd.exe` to run it at all — the
+  known-as-"BatBadBut" soft spot in that path is untrusted *arguments* to a batch shim, not the
+  `{bin}` value itself. This isn't new to the CLI-template feature — the built-in Claude path takes
+  the identical `subprocess.run(..., shell=False)` call with the same untrusted prompt content — so
+  it's a pre-existing characteristic of running on Windows at all, not something a custom template
+  introduces. Point `{bin}` at a real executable, not a batch/cmd shim, if this matters to you.
 
 ## Security in the loop — the pattern this kit teaches
 
