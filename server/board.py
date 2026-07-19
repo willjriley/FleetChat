@@ -822,9 +822,58 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "unauthorized"}, 401)
             data = self._read_json() or {}
             op = str(data.get("op", ""))
+            # Optional review hand-off: a status->review move may name a reviewer. Validate its
+            # shape up front (same rule as the other agent-name fields here, and the same length
+            # bound thread_op's own agent-name check uses) so a bad value is a 400, never a
+            # silently-dropped field. thread_op has no board handle, so the assign + chat-tag that
+            # turn "review" from a lane into a request live here in the handler.
+            reviewer = str(data.get("reviewer", "")).strip()
+            if reviewer and not re.fullmatch(r"[a-z0-9_-]{1,64}", reviewer):
+                return self._send_json({"error": "bad reviewer name"}, 400)
+            if reviewer and reviewer not in {a["id"] for a in read_roster()}:
+                # Shape-valid is not value-safe: "all" passes the charset/length check above just
+                # like any real agent id would, but "@all card ... moved to review" would broadcast
+                # to the entire crew through THIS field -- a separate vector from the title one
+                # safe_title neutralizes below. Requiring actual roster membership closes that (no
+                # reserved word to enumerate/miss) and, as a side effect, means a hand-off can never
+                # tag a dead name nobody will ever see.
+                return self._send_json({"error": "reviewer must be a current crew member"}, 400)
+            tid = str(data.get("id", ""))
+            entering_review = bool(reviewer) and op == "status" and str(data.get("lane", "")) == "review"
+            was_review = False
+            if entering_review:
+                # Peek at the card's CURRENT state before thread_op mutates it: (a) so a re-save
+                # of a card already in review doesn't re-fire the notification below, and (b) so a
+                # reviewer can't be named as the card's own current owner (self-review would defeat
+                # the whole point of a hand-off). A benign TOCTOU race here is no worse than this
+                # feature's existing best-effort consistency (see the assign/status two-call gap).
+                prior = next((x for x in _threads_read()["threads"] if x.get("id") == tid), None)
+                if prior:
+                    was_review = prior.get("status") == "review"
+                    if reviewer == prior.get("owner"):
+                        return self._send_json({"error": "reviewer can't be the card's own owner"}, 400)
             result, err, code = thread_op(op, data)
             if err:
                 return self._send_json({"error": err}, code)
+            if entering_review and not was_review:
+                # Reuse the assign op (dedups) so the reviewer lands in assignees, then tag them
+                # on the board -- so moving a card to review actually requests a pass, not just
+                # relabels a lane. Only on the actual transition INTO review, and only once the
+                # assign itself lands -- never announce a hand-off the ledger doesn't reflect. No
+                # reviewer given => none of this runs (backward compatible).
+                assigned, _aerr, _acode = thread_op("assign", {"id": tid, "agent": reviewer})
+                if assigned is not None:
+                    result = assigned   # response now reflects the reviewer landing in assignees
+                    # A card's title is chat-derived/untrusted -- neutralize any @mention inside it
+                    # before it rides this auto-post into the chat log. A zero-width space right
+                    # after '@' is invisible when rendered but breaks the literal "@name"/"@all"
+                    # substring should_engage()/addressed() require, so a title like "sync @all"
+                    # can't page someone (or, via @all, the whole crew) who was never actually asked.
+                    safe_title = result.get("title", "").replace("@", "@​")
+                    self.board.post("board",
+                                    "@%s card %s ('%s') moved to review -- your pass requested."
+                                    % (reviewer, result.get("id", ""), safe_title),
+                                    tags=["review-handoff"])
             return self._send_json({"ok": True, "thread": result}, code)
         if route.path == "/control/memory":
             if not self.control:
