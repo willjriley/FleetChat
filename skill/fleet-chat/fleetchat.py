@@ -46,13 +46,16 @@ class Board:
             h["X-Fleet-Token"] = self.token
         return h
 
+    # self.url (__init__ above) is a constructor arg or FLEETCHAT_URL env var, defaulting to
+    # loopback -- the operator's own config, not remote/chat-tainted input. Same trust class
+    # already justified at speaker.py's BOARD constant and run.py's board_url().
     def post(self, sender, text, tags=None):
         """Post a message. Returns the stored message (with its id + ts)."""
         body = json.dumps({"sender": sender, "text": text, "tags": tags or []}).encode("utf-8")
         req = urllib.request.Request(
             self.url + "/post", data=body,
             headers=self._headers({"Content-Type": "application/json"}))
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:  # nosemgrep: dynamic-urllib-use-detected
             return json.loads(r.read().decode("utf-8"))
 
     def set_typing(self, agent, on):
@@ -63,7 +66,7 @@ class Board:
             req = urllib.request.Request(
                 self.url + "/typing", data=body,
                 headers=self._headers({"Content-Type": "application/json"}))
-            urllib.request.urlopen(req, timeout=5).read()
+            urllib.request.urlopen(req, timeout=5).read()  # nosemgrep: dynamic-urllib-use-detected
         except Exception:
             pass
 
@@ -71,7 +74,7 @@ class Board:
         """Everything newer than message id `since` (0 = from the start)."""
         req = urllib.request.Request(
             self.url + "/messages?since=%d" % int(since), headers=self._headers())
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:  # nosemgrep: dynamic-urllib-use-detected
             return json.loads(r.read().decode("utf-8"))["messages"]
 
     def watch(self, since=0, timeout=120, interval=2):

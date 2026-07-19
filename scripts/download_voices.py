@@ -78,7 +78,10 @@ def download(name, url, expected_sha, dest):
         print("[voices]   %s present but SHA256 mismatch -- re-downloading." % name)
         dest.unlink()
     tmp = dest.with_name(dest.name + ".part")
-    with urllib.request.urlopen(url, timeout=60) as r:
+    # url is one of FILES' hardcoded literal values (this module, top) -- not a parameter
+    # ever set from a CLI arg, env var, or any runtime input. The downloaded content is also
+    # SHA256-verified against a hardcoded expected hash before it's ever kept (below).
+    with urllib.request.urlopen(url, timeout=60) as r:  # nosemgrep: dynamic-urllib-use-detected
         total = int(r.headers.get("Content-Length", 0))
         got = 0
         with open(tmp, "wb") as f:
