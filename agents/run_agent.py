@@ -144,6 +144,38 @@ def agent_model(name):
     return MODEL_DEFAULT
 
 
+STATUS_FILE_LOCK = threading.Lock()   # this process's own guard; a cross-process race is a
+                                       # rare, self-healing lost-update -- see write_agent_status
+
+
+def write_agent_status(name, ok, reply):
+    """Best-effort: this agent's last-turn outcome, for the Settings page's status badge --
+    a diagnostic surface, never authoritative (a write failure here must never break a turn).
+    Every crew member's process appends its OWN key to the same data/agent_status.json; there's
+    no cross-process lock, so two agents finishing at the exact same instant could lose one
+    update to a read-modify-write race -- acceptable, since the next turn overwrites it anyway."""
+    try:
+        sf = REPO / "data" / "agent_status.json"
+        with STATUS_FILE_LOCK:
+            d = {}
+            if sf.is_file():
+                try:
+                    d = json.loads(sf.read_text(encoding="utf-8"))
+                    if not isinstance(d, dict):
+                        d = {}
+                except Exception:
+                    d = {}
+            # A failure's reply IS already the short "⚠ headless turn ..." status line -- reuse
+            # it verbatim rather than re-deriving the reason. A success's reply is real chat
+            # content, not a status summary, so just record "ok".
+            reason = "ok" if ok else str(reply or "turn failed")[:200]
+            d[name] = {"ok": bool(ok), "at": time.time(), "reason": reason}
+            REPO.joinpath("data").mkdir(parents=True, exist_ok=True)
+            sf.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def addressed(name, text):
     # The @ is REQUIRED: bare prose that happens to contain an agent name ("i hope so", "max effort") must not route -- with everyday-word
     # agent names, optional-@ both mis-engaged agents and suppressed the lead fallback.
@@ -401,6 +433,7 @@ def main(name):
         finally:
             stop.set()
             board.set_typing(cfg["id"], False)
+        write_agent_status(cfg["id"], ok, reply)
         last_reply = time.time()  # cool down after EVERY engage (even a PASS) so a burst
         if sid and ok and window:
             # advance ONLY past what the session truly ingested (last id actually injected --

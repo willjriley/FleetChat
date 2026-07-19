@@ -190,6 +190,8 @@
   .set-badge{font-size:11px; border-radius:20px; padding:1px 10px; background:var(--chip); color:var(--muted); flex:none}
   .set-crew .set-badge{margin-left:auto}
   .set-badge.on{background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--ink)}
+  .set-badge.err{background:color-mix(in srgb, #e5484d 22%, transparent); color:color-mix(in srgb, #e5484d 65%, var(--ink))}
+  .set-badge.status{max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .set-note{margin-top:16px; font-size:12px; color:var(--muted); font-style:italic}
   /* Appearance: theme swatch buttons (bg preview + accent dot) */
   .theme-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 1fr)); gap:9px}
@@ -1167,8 +1169,10 @@
     var rosP=fetch("/roster",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
     var memP=fetch("/control/memory",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
     var mdlP=fetch("/control/model",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-    Promise.all([rosP,memP,mdlP]).then(function(res){
+    var stP=fetch("/control/status",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    Promise.all([rosP,memP,mdlP,stP]).then(function(res){
       var roster=(res[0]&&res[0].roster)||[], mem=(res[1]&&res[1].memory)||null, mdl=(res[2]&&res[2].model)||{};
+      var stat=(res[3]&&res[3].status)||{};
       crewBox.innerHTML="";
       if(!roster.length){ crewBox.appendChild(el("div","set-note","No crew on the board.")); return; }
       roster.forEach(function(a){
@@ -1178,6 +1182,15 @@
         if(mem && Object.prototype.hasOwnProperty.call(mem, a.id)){
           var on=!!mem[a.id];
           r.appendChild(el("span","set-badge"+(on?" on":""), on?"memory on":"memory off"));
+        }
+        // Last-turn status: a diagnostic surface, not authoritative -- a missing entry just
+        // means this agent hasn't engaged since the feature shipped, not that anything's wrong.
+        var st=stat[a.id];
+        if(st){
+          var stTxt=(st.ok?"✓ ":"⚠ "+(st.reason||"failed").slice(0,60)+" · ")+tage(st.at);
+          var stBadge=el("span","set-badge status"+(st.ok?" on":" err"), stTxt);
+          stBadge.title=st.ok ? "last turn OK, "+tage(st.at) : (st.reason||"turn failed");
+          r.appendChild(stBadge);
         }
         if(controlOn){
           // The CLI parameter this agent's NEXT turn uses -- blank = the claude CLI's own current

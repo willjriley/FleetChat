@@ -245,6 +245,24 @@ def model_write(agent, model):
     return {k: str(v) for k, v in m.items()}
 
 
+AGENT_STATUS_FILE = DATA / "agent_status.json"
+
+
+def agent_status_read():
+    """{name: {ok, at, reason}} -- each agent process's own last-turn outcome, written by
+    write_agent_status() in run_agent.py. Read-only here (the board never writes this file);
+    a diagnostic surface for the Settings page, not authoritative -- a missing/stale entry
+    just means that agent hasn't engaged recently, not that anything is wrong."""
+    if AGENT_STATUS_FILE.is_file():
+        try:
+            d = json.loads(AGENT_STATUS_FILE.read_text(encoding="utf-8"))
+            if isinstance(d, dict):
+                return d
+        except Exception:
+            pass
+    return {}
+
+
 def tts_muted_read():
     """Board-wide TTS mute flag (settings.json). A server-side speaker reads this to decide whether
     to voice agent replies, so the UI's mute button gates the actual (server) speech, not the browser."""
@@ -742,6 +760,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send_json({"error": "unauthorized"}, 401)
             return self._send_json({"model": model_read()})
+        if route.path == "/control/status":
+            if not self.control:
+                return self._send_json({"error": "control not enabled"}, 404)
+            if not self._authed():
+                return self._send_json({"error": "unauthorized"}, 401)
+            return self._send_json({"status": agent_status_read()})
         if route.path == "/control/voices":
             # Gated exactly like /control/memory (control 404 -> authed 401). Returns the STATIC
             # v1.0 voice-pack id list plus the current per-agent assignments -- the board never
