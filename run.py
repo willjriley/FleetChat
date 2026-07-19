@@ -174,7 +174,10 @@ def crew_domain():
 def wait_healthy(url, tries=60):
     for _ in range(tries):
         try:
-            with urllib.request.urlopen(url + "/health", timeout=2) as r:
+            # url is board_url() -- FLEETCHAT_BIND/FLEETCHAT_PORT env vars, the operator's own
+            # launch-time config, not remote/chat-tainted input. Same trust class already
+            # justified at speaker.py's BOARD constant and fleetchat.py's Board.url.
+            with urllib.request.urlopen(url + "/health", timeout=2) as r:  # nosemgrep: dynamic-urllib-use-detected
                 if r.status == 200:
                     return True
         except Exception:
@@ -360,10 +363,16 @@ def main():
         # processes. Always --keep: a /restart must never wipe the board history.
         print("[run] /restart requested -- relaunching the whole stack ...")
         time.sleep(1.5)  # let the port free up
-        args = [a for a in sys.argv if a != "--demo"]  # a restart restores the real lineup
-        if "--keep" not in args:
-            args.insert(1, "--keep")
-        os.execv(PY, [PY] + args)
+        # Self re-exec: run THIS resolved script path (never argv[0]) via the trusted
+        # interpreter, carrying only the operator's own launch flags forward (minus --demo,
+        # plus --keep). sys.argv here is the process's own local launch line (sealed loopback
+        # board; a non-loopback bind already requires a token); /restart lets a participant
+        # TRIGGER the relaunch but never SHAPE its exec target or args. Kept a self re-exec by
+        # design -- residual scanner taint (sys.argv -> execv) is justified, not silenced.
+        flags = [a for a in sys.argv[1:] if a != "--demo"]  # a restart restores the real lineup
+        if "--keep" not in flags:
+            flags.insert(0, "--keep")
+        os.execv(PY, [PY, str(REPO / "run.py")] + flags)  # nosemgrep: dangerous-os-exec-tainted-env-args
     return 0
 
 

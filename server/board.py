@@ -643,7 +643,13 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self):
         """Token gate for the API. Open when require_token is False (local mode).
         Constant-time compare so the token cannot be recovered by request timing."""
-        if not self.cfg.get("require_token"):
+        if not self.cfg.get("require_token"):  # nosemgrep: shield-fail-open-security-check
+            # Documented, load-bearing design (see SECURITY.md), not an accidental bypass:
+            # require_token can only be False when enforce_security() has already confirmed
+            # the bind is loopback-only -- a non-loopback bind forces require_token=True and
+            # REFUSES TO START without a token (same file, enforce_security()). This branch is
+            # reachable only in the sealed-local profile, where "nothing is reachable from
+            # another machine" already holds by construction.
             return True
         return hmac.compare_digest(self.headers.get("X-Fleet-Token", ""), self.cfg.get("token") or "")
 

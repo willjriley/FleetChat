@@ -56,14 +56,14 @@ def _headers(extra=None):
 
 
 def _get_json(path):
-    with urllib.request.urlopen(urllib.request.Request(BOARD + path, headers=_headers()), timeout=6) as r:
+    with urllib.request.urlopen(urllib.request.Request(BOARD + path, headers=_headers()), timeout=6) as r:  # nosemgrep: dynamic-urllib-use-detected -- BOARD is FLEETCHAT_URL config (loopback default, :32); fixed http scheme + internal path, not attacker-controlled
         return json.load(r)
 
 
 def _post_json(path, obj):
     body = json.dumps(obj).encode("utf-8")
     req = urllib.request.Request(BOARD + path, data=body, headers=_headers({"Content-Type": "application/json"}))
-    urllib.request.urlopen(req, timeout=5).read()
+    urllib.request.urlopen(req, timeout=5).read()  # nosemgrep: dynamic-urllib-use-detected -- BOARD is FLEETCHAT_URL config (loopback default, :32); fixed http scheme + internal path, not attacker-controlled
 
 
 def _overrides():
