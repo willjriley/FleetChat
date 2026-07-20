@@ -15,3 +15,13 @@ personas.local/
 # Python
 __pycache__/
 *.pyc
+
+# Go daemon build output/logs -- daemon/*.go is the source of truth, never the binary
+daemon/daemon.exe
+daemon/*.log
+
+# local-only working docs (audit briefs, notes, scratch) -- never committed
+local/
+
+# relay-test scratch
+.fleet-relay/
