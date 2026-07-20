@@ -13,8 +13,7 @@ It (1) pip-installs the kokoro-onnx engine (+ soundfile), and (2) downloads the 
 (~353 MB, Apache-2.0) into data/voices/ (git-ignored -- too big for the repo). Then start the
 speaker alongside the board:
 
-    python run.py --speak       # board + crew + the voice speaker
-    # (or run it standalone:  python agents/speaker.py)
+    python agents/speaker.py    # the voice speaker, alongside a running board
 
 Idempotent: re-running skips the engine if importable and any weight already downloaded.
 """
@@ -116,7 +115,7 @@ def main():
     print("[voices] done -- high-quality voices are installed.")
     if not engine_ok:
         print("[voices] NOTE: the engine didn't install cleanly; run the pip line above, then:")
-    print("[voices] start them with:  python run.py --speak")
+    print("[voices] start it with:  python agents/speaker.py   (alongside a running board)")
     return 0
 
 

@@ -103,7 +103,8 @@ func main() {
 	voiceMode := "auto"
 	voiceAssign := map[string]string{}
 	modelOverride := map[string]string{}
-	var speakerSeen time.Time // last /control/tts heartbeat from a real server-side speaker (e.g. fleet-speaker.bat), see speaker_active()'s 30s TTL in board.py
+	var speakerSeen time.Time       // last /control/tts heartbeat from a real server-side speaker (e.g. fleet-speaker.bat), see speaker_active()'s 30s TTL in board.py
+	vm := newVoiceManager(repoRoot) // orchestrates the OPTIONAL Python HQ-voice sidecar (download + speaker) -- see voices.go
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(webDir))) // the REAL index.html/tasks.html, unmodified, served from their real location
@@ -453,6 +454,7 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true, "shutting_down": true})
 		go func() {
 			time.Sleep(400 * time.Millisecond) // let the response above flush first
+			vm.StopSpeaker()                   // /shutdown kills via reg.KillAll directly (not bs.Stop), so stop the speaker here too
 			reg.KillAll()
 			os.Exit(0)
 		}()
@@ -536,8 +538,48 @@ func main() {
 			assigned[k] = v
 		}
 		settingsMu.Unlock()
+		dlState, dlLog, dlErr := vm.DownloadStatus()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"voices": []string{}, "assigned": assigned})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"assigned":        assigned,
+			"installed":       vm.Installed(),      // are the high-quality (Kokoro) weights present?
+			"speaker_running": vm.SpeakerRunning(), // is the daemon-managed speaker up?
+			"download":        map[string]string{"state": dlState, "log": dlLog, "error": dlErr},
+		})
+	})
+
+	mux.HandleFunc("/control/voices/download", func(w http.ResponseWriter, r *http.Request) {
+		// Kick the one-time Kokoro weights download (idempotent). POST + CSRF-gated
+		// by securityMiddleware. Returns immediately; the UI polls GET /control/voices
+		// for progress.
+		vm.Download()
+		state, logLine, errMsg := vm.DownloadStatus()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "state": state, "log": logLine, "error": errMsg})
+	})
+
+	mux.HandleFunc("/control/speaker", func(w http.ResponseWriter, r *http.Request) {
+		// Start/stop the high-quality voice speaker (Python sidecar). POST + CSRF-gated.
+		var body struct {
+			Action string `json:"action"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch body.Action {
+		case "start":
+			if err := vm.StartSpeaker(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": err.Error()})
+				return
+			}
+		case "stop":
+			vm.StopSpeaker()
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "action must be 'start' or 'stop'"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "running": vm.SpeakerRunning()})
 	})
 
 	mux.HandleFunc("/control/voice", func(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +672,7 @@ func main() {
 	// request is Host-checked and every mutation is POST + custom-header + Origin gated.
 	bs = newBoardServer("127.0.0.1:"+daemonPort, securityMiddleware(mux),
 		func() { bootstrapFleet(repoRoot, reg, board) },
-		func() { reg.KillAll() })
+		func() { vm.StopSpeaker(); reg.KillAll() }) // also stop the voice speaker, so a board-stop / Exit / Restart never orphans the Kokoro process
 	if err := bs.Start(); err != nil {
 		log.Fatalf("[daemon] initial board start failed: %s", err)
 	}

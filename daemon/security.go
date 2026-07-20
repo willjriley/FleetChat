@@ -51,15 +51,17 @@ func originAllowed(origin string) bool {
 // gated because the middleware treats every POST as a mutation. (/control/board
 // self-guards its stop/start branch to POST for the same reason.)
 var mustPOST = map[string]bool{
-	"/shutdown":        true,
-	"/kill":            true,
-	"/spawn":           true,
-	"/control/add":     true,
-	"/control/restart": true,
-	"/control/clear":   true,
-	"/control/respawn": true,
-	"/control/kick":    true,
-	"/control/pick":    true,
+	"/shutdown":                true,
+	"/kill":                    true,
+	"/spawn":                   true,
+	"/control/add":             true,
+	"/control/restart":         true,
+	"/control/clear":           true,
+	"/control/respawn":         true,
+	"/control/kick":            true,
+	"/control/pick":            true,
+	"/control/voices/download": true, // spawns the Kokoro downloader
+	"/control/speaker":         true, // spawns/stops the voice speaker
 }
 
 // securityMiddleware wraps the whole mux -- see the file header for the model.
