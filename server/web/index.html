@@ -46,10 +46,6 @@
   @keyframes spulse{0%,100%{opacity:.35;transform:scale(.92)}50%{opacity:1;transform:scale(1.12)}}
   .agent .kick{margin-left:6px;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0 3px;border-radius:4px}
   .agent .kick:hover{color:#c0392b;background:var(--chip)}
-  /* per-agent memory toggle: dim+grey = -p (stateless, the default); lit = long-term memory on */
-  .agent .book{margin-left:6px;border:0;background:transparent;cursor:pointer;font-size:13px;line-height:1;padding:0 3px;border-radius:4px;opacity:.3;filter:grayscale(1)}
-  .agent .book:hover{background:var(--chip);opacity:.65}
-  .agent .book.on{opacity:1;filter:none}
   .addbtn{margin:12px 4px 0;width:calc(100% - 8px);font:inherit;font-size:12px;color:var(--accent);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:7px;cursor:pointer}
   .addbtn:hover{border-color:var(--accent);background:var(--chip)}
   .feed{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -60,6 +56,8 @@
   .msg .top{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
   .msg .who{font-weight:600}
   .msg .when{font-size:11px;color:var(--muted)}
+  /* structured-recipient indicator: "→ bob, dave" -- shows who a message actually notified */
+  .msg .msgto{font-size:11px;color:var(--accent);opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%}
   .msg .tags{margin-top:5px;display:flex;flex-wrap:wrap;gap:5px}
   .tag{font-size:11px;color:var(--muted);background:var(--chip);border-radius:20px;padding:1px 9px}
   /* rich content */
@@ -81,6 +79,11 @@
   html[data-theme="light"] .mchip, html[data-theme="sepia"] .mchip{
     background:hsla(var(--mc-h,210),65%,45%,.16);color:hsl(var(--mc-h,210),58%,38%)}
   .mchip-all{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);font-weight:700}
+  /* #name reference chip: deliberately flat/muted, no per-name hue, no accent -- reads as visibly
+     quieter than an @-mention because it IS quieter: it never wakes the agent it names. --muted/--chip
+     are already theme-aware (defined per-palette above), so this needs no separate dark/light rules
+     the way the hue-based .mchip above does. */
+  .mchip-ref{background:var(--chip);color:var(--muted);font-weight:600;font-style:italic}
   .msg.tagged{background:color-mix(in srgb,var(--accent) 10%,transparent);border-left:3px solid var(--accent);border-radius:8px;padding:8px 12px}
   .code{position:relative;margin:8px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--codebg)}
   .code .lang{position:absolute;top:0;right:0;font-size:10px;color:var(--muted);background:var(--chip);padding:1px 7px;border-radius:0 0 0 6px;text-transform:uppercase;letter-spacing:.5px}
@@ -190,17 +193,9 @@
   .set-badge{font-size:11px; border-radius:20px; padding:1px 10px; background:var(--chip); color:var(--muted); flex:none}
   .set-crew .set-badge{margin-left:auto}
   .set-badge.on{background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--ink)}
+  .set-badge.err{background:color-mix(in srgb, #e5484d 22%, transparent); color:color-mix(in srgb, #e5484d 65%, var(--ink))}
+  .set-badge.status{max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .set-note{margin-top:16px; font-size:12px; color:var(--muted); font-style:italic}
-  .cli-btn{margin-left:auto; font:inherit; font-size:11px; color:var(--muted); background:var(--chip); border:1px solid var(--line); border-radius:20px; padding:1px 10px; cursor:pointer; flex:none}
-  .cli-btn:hover{border-color:var(--accent); color:var(--ink)}
-  .cli-row{width:100%; padding:8px 0 4px; border-bottom:1px solid var(--line)}
-  .cli-row:last-child{border-bottom:0}
-  .cli-ta{width:100%; box-sizing:border-box; resize:vertical; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:12.5px ui-monospace,Consolas,monospace}
-  .cli-btns{display:flex; gap:8px; margin-top:6px}
-  .cli-btns button{font:inherit; font-size:12px; color:var(--ink); background:var(--chip); border:1px solid var(--line); border-radius:7px; padding:3px 11px; cursor:pointer}
-  .cli-btns button:hover{border-color:var(--accent)}
-  .cli-err{margin:6px 0 0; color:color-mix(in srgb, #e5484d 60%, var(--ink)); font-style:normal; min-height:0}
-  .cli-err:empty{margin:0}
   /* Appearance: theme swatch buttons (bg preview + accent dot) */
   .theme-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 1fr)); gap:9px}
   .theme-sw{border:1px solid var(--line); border-radius:11px; padding:8px; cursor:pointer; background:var(--panel); color:var(--ink); text-align:left; font:inherit; font-size:12px; display:flex; flex-direction:column; gap:7px; transition:border-color .15s ease, box-shadow .15s ease}
@@ -241,8 +236,6 @@
   .card .cbtns button{font:inherit;font-size:11px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
   .card .cbtns button:hover{border-color:var(--accent);color:var(--accent)}
   .card .csum{font-size:11.5px;color:var(--muted);margin-top:5px;font-style:italic}
-  .card .cdesc{margin-left:5px;font-size:11px;color:var(--muted);cursor:pointer}
-  .card .cdesc:hover{color:var(--accent)}
   .kadd{width:calc(100% - 4px);margin:2px;font:inherit;font-size:12px;color:var(--accent);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:6px;cursor:pointer}
   .kadd:hover{border-color:var(--accent);background:var(--chip)}
   .kempty{font-size:11.5px;color:var(--muted);margin:2px 4px}
@@ -288,7 +281,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, memoryState = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false, serverSeen = 0, ttsKnown = false, speakingSet = {}, voiceMode = "auto";
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false, serverSeen = 0, ttsKnown = false, speakingSet = {}, voiceMode = "auto";
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -462,27 +455,20 @@
 
   function renderAgents(){
     // The sidebar renders the CONFIGURED ROSTER (data/roster.json via /roster), not "who posted".
-    // Every agent is equal: same row, a memory toggle + a remove (x) for all, no forced lead-star.
+    // Every agent is equal: same row, a remove (x) for all, no forced lead-star.
     agents.innerHTML="";
     rosterList.forEach(function(a){
       var name=a.id;
-      var row=document.createElement("div"); row.className="agent";
+      var row=document.createElement("div"); row.className="agent"; row.title=a.role||"";
       row.appendChild(av(name));
       var nm=document.createElement("span"); nm.className="nm"; nm.textContent=a.name||name;
-      row.title=a.role||"";
       var dots=document.createElement("span"); dots.className="dots"+(typingSet[name]?" on":""); dots.innerHTML="<i>&#8226;</i><i>&#8226;</i><i>&#8226;</i>"; dots.title="working on a reply";
       var spk=document.createElement("span"); spk.className="spk"+(speakingSet[name]?" on":""); spk.textContent="🔊"; spk.title="speaking now";
       var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(dots); nmwrap.appendChild(spk);
       row.appendChild(nmwrap);
       if(controlOn){
-        var on=!!memoryState[name];
-        var bk=document.createElement("button"); bk.className="book"+(on?" on":""); bk.textContent="📖";
-        bk.title=on ? (name+": long-term memory ON — carries its plan + progress across turns. Click for stateless -p.")
-                    : (name+": -p (stateless, the default) — fresh brain each message, no memory. Click for long-term memory: best when it's building something over several turns.");
-        (function(n){ bk.addEventListener("click", function(){ toggleMemory(n); }); })(name);
-        row.appendChild(bk);
         var x=document.createElement("button"); x.className="kick"; x.textContent="×"; x.title="Remove "+name;
-        (function(n){ x.addEventListener("click", function(){ kickAgent(n); }); })(name);
+        x.addEventListener("click", function(){ kickAgent(name); });
         row.appendChild(x);
       }
       agents.appendChild(row);
@@ -494,6 +480,7 @@
       body:JSON.stringify({agent:name})})
       .then(function(r){ if(r.status===401){askToken();} else { delete agentNames[name]; poll(); } });
   }
+
   function loadRoster(){
     // the who's-who: each agent's lane, shown as a hover title (no lead/star -- all agents equal)
     fetch("/roster",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
@@ -517,32 +504,6 @@
     fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
       .then(function(j){ if(j){ ttsKnown=true; serverTts=!!j.server; if(serverTts) serverSeen=Date.now();
         if(j.mode) voiceMode=j.mode; } }).catch(function(){});
-  }
-  function loadMemory(){
-    // fetch the current per-agent memory flags so the book icons render lit/dim correctly
-    if(!controlOn) return;
-    fetch("/control/memory",{headers:headers()})
-      .then(function(r){ return r.status===200 ? r.json() : null; })
-      .then(function(j){ if(j && j.memory){ memoryState=j.memory; renderAgents(); } })
-      .catch(function(){});
-  }
-  function toggleMemory(name){
-    // flip -p <-> long-term memory for one agent; the server writes it to the git-ignored
-    // data/settings.json, and each agent re-reads that fresh on its next message (no restart). Optimistic UI.
-    var on=!memoryState[name];
-    memoryState[name]=on; renderAgents();
-    fetch("/control/memory",{method:"POST",headers:headers({"Content-Type":"application/json"}),
-      body:JSON.stringify({agent:name, on:on})})
-      .then(function(r){
-        if(r.status===401){ askToken(); throw null; }
-        return r.json().then(function(j){ return {s:r.status, j:j}; });
-      })
-      .then(function(res){
-        if(res.s>=400){ throw res.j; }
-        if(res.j && res.j.memory){ memoryState=res.j.memory; renderAgents(); }
-      })
-      .catch(function(e){ memoryState[name]=!on; renderAgents();   // revert on failure
-        if(e && e.error){ alert("Couldn't toggle memory: "+e.error); } });
   }
   function addAgent(){
     // native folder picker first (a real OS dialog on this machine); typed-path fallback
@@ -582,16 +543,14 @@
     {cmd:"/tasks",    desc:"Open the full task board (new tab)"},
     {cmd:"/glance",   desc:"Show/hide the quick-glance task panel"},
     {cmd:"/task",     desc:"Create a task card: /task <title>"},
-    {cmd:"/claim",    desc:"Claim a task card: /claim <id>"},
-    {cmd:"/done",     desc:"Close a task card: /done <id> [summary]"},
-    {cmd:"/mytasks",  desc:"List task cards you own or are assigned"},
     {cmd:"/restart",  desc:"Restart the server and the whole crew (flushes stuck agents)"},
     {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
+    {cmd:"/debug",    desc:"Toggle routing debug log (who woke whom -> server log)"},
     {cmd:"/help",     desc:"Show these commands"}
   ];
   // Commands that take arguments: picking them from the palette leaves a trailing space so you
   // can type the args right away (generalized from the old /poll-only special case).
-  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/task":1,"/claim":1,"/done":1};
+  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/task":1};
   var sBox=null, sItems=[], sSel=0;
   function slashOpen(){ return !!sBox; }
   function slashClose(){ if(sBox){ sBox.remove(); sBox=null; } sItems=[]; sSel=0; }
@@ -633,6 +592,7 @@
     if(/^\/task\b/.test(text)){ $("#text").value=""; renderChips(); alert("Usage: /task <title>"); return true; }
     if(text==="/restart"){ $("#text").value=""; renderChips(); restartServer(); return true; }
     if(text==="/shutdown"){ $("#text").value=""; renderChips(); shutdownServer(); return true; }
+    if(text==="/debug"){ clearInput(); toggleDebug(); return true; }
     if(text==="/help"){ showCommands(); return true; }
     // ----- operator commands: each is self-contained; the client-only ones never touch the board -----
     if(text==="/status"){ clearInput(); cmdStatus(); return true; }
@@ -647,13 +607,6 @@
     var mResp=text.match(/^\/respawn\s+([a-z0-9_-]+)$/);
     if(mResp){ clearInput(); cmdRespawn(mResp[1]); return true; }
     if(/^\/respawn\b/.test(text)){ clearInput(); localNote("<p><b>/respawn</b> — usage: <code>/respawn &lt;agent&gt;</code></p>"); return true; }
-    var mClaim=text.match(/^\/claim\s+(\S+)$/);
-    if(mClaim){ clearInput(); cmdClaim(mClaim[1]); return true; }
-    if(/^\/claim\b/.test(text)){ clearInput(); localNote("<p><b>/claim</b> — usage: <code>/claim &lt;id&gt;</code> &nbsp;(e.g. <code>/claim t12</code>)</p>"); return true; }
-    var mDone=text.match(/^\/done\s+(\S+)(?:\s+([\s\S]+))?$/);
-    if(mDone){ clearInput(); cmdDone(mDone[1], (mDone[2]||"").trim()); return true; }
-    if(/^\/done\b/.test(text)){ clearInput(); localNote("<p><b>/done</b> — usage: <code>/done &lt;id&gt; [summary]</code></p>"); return true; }
-    if(text==="/mytasks"){ clearInput(); cmdMyTasks(); return true; }
     return false;
   }
   function clearInput(){ $("#text").value=""; renderChips(); slashClose(); }
@@ -674,18 +627,33 @@
       msgs.innerHTML=""; allMsgs=[]; seen={}; counts={}; lastId=0; $("#text").value=""; renderChips(); poll();
     }).catch(function(){ alert("Couldn't reach the server."); });
   }
+  function toggleDebug(){
+    // Flip the server's routing debug log (who-woke-whom). Server returns the NEW state;
+    // show it as a local note so you know whether the daemon log is now tracing routing.
+    fetch("/control/debug",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:"{}"})
+      .then(function(r){ return r.status===200 ? r.json() : null; })
+      .then(function(j){
+        if(!j){ localNote("<p>⚠️ Couldn't toggle debug logging.</p>"); return; }
+        localNote("<p>🐞 Routing debug log is now <b>"+(j.debug?"ON":"OFF")+"</b> — the who-woke-whom trace goes to the daemon log (<code>daemon.err.log</code>).</p>");
+      }).catch(function(){ localNote("<p>⚠️ Couldn't reach the server to toggle debug logging.</p>"); });
+  }
 
-  // ---------- @-mention chips + "you were tagged" row highlight ----------
-  // After a message renders, wrap @name tokens in its TEXT (never code/pre/links) in a small color
-  // pill. The tint reuses the SAME per-name hue() the avatars use, so a mention reads as "that
-  // person"; @all gets the accent color. A message that @-names YOU (the #who name) also tints its
-  // whole row, so "you were tagged" is scannable at a glance.
-  var MENTION_RE=/(^|[\s(>])@(all|[A-Za-z0-9_-]{2,32})\b/g;
-  function mentionChip(name){
+  // ---------- @-mention (wakes) + #-reference (doesn't) chips + "you were tagged" row highlight ----------
+  // After a message renders, wrap @name/#name tokens in its TEXT (never code/pre/links) in a small
+  // pill. @name is an ACTIVE tag (see routing.go's addressed() -- it's what actually wakes that
+  // agent) and gets the colored, per-name-hued chip; #name is a passing REFERENCE with no routing
+  // effect at all (agents are told to use it -- protocolRules() in board.go -- whenever they mention
+  // another agent without actually needing them engaged) and gets a deliberately muted, undyed chip
+  // so the two read as visibly different at a glance, not just different by one character. A message
+  // that @-names YOU (the #who name) tints its whole row -- #-referencing you does NOT, since it's
+  // not something that needs your attention either.
+  var MENTION_RE=/(^|[\s(>])([@#])(all|[A-Za-z0-9_-]{2,32})\b/g;
+  function mentionChip(symbol, name){
     var span=document.createElement("span"), lc=(name||"").toLowerCase();
-    if(lc==="all"){ span.className="mchip mchip-all"; }
-    else { span.className="mchip"; span.style.setProperty("--mc-h", hue(name)+""); }  // hash the name AS TYPED -- av() hashes the raw sender, so @Will matches Will's avatar
-    span.textContent="@"+name;   // textContent -> never re-injects HTML
+    if(symbol==="#"){ span.className="mchip mchip-ref"; span.title="reference only — does not notify or wake "+name; }
+    else if(lc==="all"){ span.className="mchip mchip-all"; }
+    else { span.className="mchip"; span.style.setProperty("--mc-h", hue(name)+""); }  // hash the name AS TYPED -- av() hashes the raw sender, so @Alice matches Alice's avatar
+    span.textContent=symbol+name;   // textContent -> never re-injects HTML
     return span;
   }
   function decorateMentions(root){
@@ -700,11 +668,11 @@
     targets.forEach(function(tn){
       var text=tn.nodeValue, frag=document.createDocumentFragment(), last=0, m; MENTION_RE.lastIndex=0;
       while((m=MENTION_RE.exec(text))){
-        var at=m.index+m[1].length;                        // the '@' position (m[1] is the lead char, kept as text)
+        var at=m.index+m[1].length;                        // the '@'/'#' position (m[1] is the lead char, kept as text)
         if(at>last) frag.appendChild(document.createTextNode(text.slice(last,at)));
-        frag.appendChild(mentionChip(m[2])); last=m.index+m[0].length;
+        frag.appendChild(mentionChip(m[2], m[3])); last=m.index+m[0].length;
       }
-      if(!frag.childNodes.length) return;                  // no @mention in this node -> leave it be
+      if(!frag.childNodes.length) return;                  // no @/# mention in this node -> leave it be
       if(last<text.length) frag.appendChild(document.createTextNode(text.slice(last)));
       tn.parentNode.replaceChild(frag, tn);
     });
@@ -781,16 +749,14 @@
     localNote("<p>⬇ Exported <b>"+rows.length+"</b> message"+(rows.length===1?"":"s")+" to <code>fleetchat-transcript.md</code>.</p>");
   }
   function cmdStatus(){
-    // CLIENT-ONLY: a snapshot built from data already polled (roster, memory flags, typing/speaking)
+    // CLIENT-ONLY: a snapshot built from data already polled (roster, typing/speaking)
     if(!rosterList.length){ localNote("<p>No agents on the board yet.</p>"); return; }
-    var showMem=controlOn;   // the memory column only means something when control (and loadMemory) is on
-    var head="<tr><th>agent</th><th>role</th>"+(showMem?"<th>memory</th>":"")+"<th>now</th></tr>";
+    var head="<tr><th>agent</th><th>role</th><th>now</th></tr>";
     var rows=rosterList.map(function(a){
       var name=a.id, st=[];
       if(typingSet[name]) st.push("⌨️ typing");
       if(speakingSet[name]) st.push("🔊 speaking");
       return "<tr><td><b>"+esc(a.name||name)+"</b></td><td>"+esc(a.role||"")+"</td>"+
-             (showMem?"<td>"+(memoryState[name]?"on":"off")+"</td>":"")+
              "<td>"+(st.length?st.join(", "):"idle")+"</td></tr>";
     }).join("");
     localNote("<p>👥 Crew — <b>"+rosterList.length+"</b> agent"+(rosterList.length===1?"":"s")+":</p><table class=\"statustbl\">"+head+rows+"</table>");
@@ -834,50 +800,6 @@
         localNote("<p>♻️ Respawned <b>"+esc(agent)+"</b> (pid "+esc(String(res.j&&res.j.pid))+").</p>"); poll(); })
       .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to respawn.</p>"); });
   }
-  function normTaskId(raw){ return String(raw||"").trim().toLowerCase().replace(/^#/,""); }
-  function cmdClaim(rawId){
-    // SERVER-backed: claim a card for the composer's identity (op=claim; adopts a stale claim too)
-    var id=normTaskId(rawId);
-    if(!/^t\d+$/.test(id)){ localNote("<p>⚠️ <b>"+esc(rawId)+"</b> doesn't look like a task id — try <code>/claim t12</code>.</p>"); return; }
-    fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),
-      body:JSON.stringify({op:"claim", id:id, agent:meName()})})
-      .then(function(r){ if(r.status===401){ askToken(); return null; }
-        return r.json().then(function(j){ return {s:r.status, j:j}; }); })
-      .then(function(res){ if(!res) return;
-        if(res.s>=400){ localNote("<p>⚠️ Couldn't claim <b>"+esc(id)+"</b>: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
-        var ti=res.j&&res.j.thread&&res.j.thread.title;
-        localNote("<p>✋ Claimed <b>"+esc(id)+"</b>"+(ti?" — "+esc(ti):"")+".</p>"); loadThreads(); })
-      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to claim.</p>"); });
-  }
-  function cmdDone(rawId, summary){
-    // SERVER-backed: close a card (op=close), optionally recording a one-line summary
-    var id=normTaskId(rawId);
-    if(!/^t\d+$/.test(id)){ localNote("<p>⚠️ <b>"+esc(rawId)+"</b> doesn't look like a task id — try <code>/done t12</code>.</p>"); return; }
-    fetch("/threads",{method:"POST",headers:headers({"Content-Type":"application/json"}),
-      body:JSON.stringify({op:"close", id:id, summary:summary||""})})
-      .then(function(r){ if(r.status===401){ askToken(); return null; }
-        return r.json().then(function(j){ return {s:r.status, j:j}; }); })
-      .then(function(res){ if(!res) return;
-        if(res.s>=400){ localNote("<p>⚠️ Couldn't close <b>"+esc(id)+"</b>: "+esc((res.j&&res.j.error)||("HTTP "+res.s))+"</p>"); return; }
-        localNote("<p>✅ Closed <b>"+esc(id)+"</b>"+(summary?" — "+esc(summary):"")+".</p>"); loadThreads(); })
-      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server to close.</p>"); });
-  }
-  function cmdMyTasks(){
-    // CLIENT-filtered over the authed ledger: cards this composer owns or is assigned to
-    var me=meName();
-    fetch("/threads",{headers:headers()})
-      .then(function(r){ if(r.status===401){ askToken(); return null; }
-        return r.status===200 ? r.json() : null; })
-      .then(function(j){ if(!j) return;
-        var mine=(j.threads||[]).filter(function(t){ return t.owner===me || (t.assignees||[]).indexOf(me)>=0; });
-        if(!mine.length){ localNote("<p>📋 No task cards owned by or assigned to <b>"+esc(me)+"</b> yet.</p>"); return; }
-        var head="<tr><th>id</th><th>title</th><th>status</th></tr>";
-        var rows=mine.map(function(t){
-          return "<tr><td><b>"+esc(t.id)+"</b></td><td>"+esc(t.title||"")+"</td><td>"+esc(t.status||"")+"</td></tr>";
-        }).join("");
-        localNote("<p>📋 <b>"+mine.length+"</b> task"+(mine.length===1?"":"s")+" for <b>"+esc(me)+"</b>:</p><table class=\"statustbl\">"+head+rows+"</table>"); })
-      .catch(function(){ localNote("<p>⚠️ Couldn't reach the server for your tasks.</p>"); });
-  }
 
   function add(m){
     if(seen[m.id]) return; seen[m.id]=1; allMsgs.push(m);
@@ -891,7 +813,18 @@
     var top=document.createElement("div"); top.className="top";
     var who=document.createElement("span"); who.className="who"; who.textContent=m.sender;
     var wh=document.createElement("span"); wh.className="when"; wh.textContent=when(m.ts);
-    top.appendChild(who); top.appendChild(wh); body.appendChild(top);
+    top.appendChild(who); top.appendChild(wh);
+    // Structured recipients, made VISIBLE: who this message actually notified. This is the
+    // auditable half of the routing fix -- addressing is a real stored field ("to"), not something
+    // scraped from prose, so we can show it. Only shown when explicitly addressed (a broadcast or an
+    // agent-reply-to-nobody has an empty/absent "to" and gets no tag). textContent -> XSS-safe.
+    if(Array.isArray(m.to) && m.to.length){
+      var toEl=document.createElement("span"); toEl.className="msgto";
+      toEl.textContent="→ "+m.to.join(", ");
+      toEl.title="notified "+m.to.join(", ")+" (structured routing, not parsed from the message text)";
+      top.appendChild(toEl);
+    }
+    body.appendChild(top);
 
     var poll=renderPoll(m);
     if(poll){ body.appendChild(poll); }
@@ -931,10 +864,24 @@
     var sender=($("#who").value||"you").trim(), text=$("#text").value.trim();
     if(!text) return;
     if(handleSlash(text)){ return; }   // /clear, /help -> handled locally, not posted to the board
+    // STRUCTURED addressing: the recipient list is parseTargets() (the same @-chips shown above the
+    // composer), sent as `to`. The server routes by this field, never by scanning the text -- so an
+    // @name typed in prose is display-only. Empty `to` from a human = broadcast to the whole crew.
+    var to=parseTargets();
     $("#send").disabled=true;
     fetch("/post", {method:"POST", headers:headers({"Content-Type":"application/json"}),
-      body:JSON.stringify({sender:sender, text:text, tags:[]})})
-      .then(function(r){ if(r.status===401){ askToken(); } else { $("#text").value=""; renderChips(); poll(); } })
+      body:JSON.stringify({sender:sender, text:text, tags:[], to:to})})
+      .then(function(r){
+        if(r.status===401){ askToken(); return; }
+        if(r.status>=400){
+          // Do NOT clear the composer on a rejection (e.g. 403 for picking a name that
+          // collides with an agent, or 400 for a bad body) -- surface it, keep the text,
+          // so a rejected message isn't silently lost. r.text() never rejects; parse if we can.
+          return r.text().then(function(t){ var m; try{ m=JSON.parse(t).error; }catch(e){} throw m||("HTTP "+r.status); });
+        }
+        $("#text").value=""; renderChips(); poll();
+      })
+      .catch(function(err){ if(typeof err==="string"){ alert("Message not sent: "+err); } })
       .finally(function(){ $("#send").disabled=false; });
   });
   // ---------- @-mention autocomplete: type @ to pick an agent from the crew ----------
@@ -979,7 +926,10 @@
   }
   // ---------- target chips: show live who this message is addressed to (parsed from the @mentions) ----------
   function parseTargets(){
-    var re=/(^|[\s(])@(all|[a-z0-9_-]+)/gi, text=$("#text").value, seen={}, out=[], m;
+    // Kept in lockstep with the display MENTION_RE (min 2 chars, same lead set incl '>') so what
+    // renders as a chip is exactly what's SENT as a recipient -- otherwise "@x" would route with no
+    // visible chip, or ">@name" would show a chip but not route.
+    var re=/(^|[\s(>])@(all|[a-z0-9_-]{2,32})\b/gi, text=$("#text").value, seen={}, out=[], m;
     while((m=re.exec(text))){ var n=m[2].toLowerCase(); if(!seen[n]){ seen[n]=1; out.push(n); } }
     return out;
   }
@@ -997,8 +947,10 @@
     });
   }
   function removeMention(n){
+    // Lead set includes '>' to match parseTargets/MENTION_RE -- otherwise a ">@name" chip's ×
+    // couldn't strip the mention it represents.
     var ta=$("#text"), esc=n.replace(/[.*+?^${}()|[\]\\-]/g,"\\$&");
-    ta.value=ta.value.replace(new RegExp("(^|[\\s(])@"+esc+"\\b[ ]?","gi"),"$1").replace(/[ ]{2,}/g," ").replace(/^ +/,"");
+    ta.value=ta.value.replace(new RegExp("(^|[\\s(>])@"+esc+"\\b[ ]?","gi"),"$1").replace(/[ ]{2,}/g," ").replace(/^ +/,"");
     renderChips(); ta.focus();
   }
   $("#text").addEventListener("input", function(){ renderChips(); var t=mToken(); if(t) mRender(t.q); else mClose(); slashRender(); });
@@ -1027,7 +979,7 @@
   fetch("/health").then(function(r){return r.json();}).then(function(h){
     scope.textContent=h.version||"";
     controlOn = !!h.control;
-    if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } var kb=$("#kadd"); if(kb) kb.style.display=""; loadMemory(); }
+    if(controlOn){ var sb=$("#shutdown"); sb.style.display=""; sb.addEventListener("click", shutdownServer); var ab=$("#addagent"); if(ab){ ab.style.display=""; ab.addEventListener("click", addAgent); } var kb=$("#kadd"); if(kb) kb.style.display=""; }
     loadRoster();
   }).catch(function(){});
   function shutdownServer(){
@@ -1081,14 +1033,7 @@
       if(!items.length){ var e=document.createElement("div"); e.className="kempty"; e.textContent="—"; lane.appendChild(e); }
       items.forEach(function(t){
         var c=document.createElement("div"); c.className="card "+t.status+(t.stale?" stale":"");
-        var ct=document.createElement("div"); ct.className="ct"; ct.textContent=t.title;
-        if(t.desc && String(t.desc).trim()){          // detail beyond the title -> 📝 opens the full board
-          var db=document.createElement("span"); db.className="cdesc"; db.textContent="📝";
-          db.title="Has a description — open the full board";
-          db.addEventListener("click", function(e){ e.stopPropagation(); window.open("/tasks","_blank"); });
-          ct.appendChild(db);
-        }
-        c.appendChild(ct);
+        var ct=document.createElement("div"); ct.className="ct"; ct.textContent=t.title; c.appendChild(ct);
         var meta=document.createElement("div"); meta.className="cmeta";
         if(t.owner){ var ob=av(t.owner); ob.title="owner: "+t.owner; meta.appendChild(ob); }
         (t.assignees||[]).forEach(function(a){ if(a!==t.owner){ var ab=av(a); ab.title="assigned: "+a; meta.appendChild(ab); } });
@@ -1138,7 +1083,7 @@
 // ============================================================
 // ADDED: Settings screen (view-only) + theme picker.
 // Self-contained IIFE — adds no globals, only READS existing
-// endpoints (/health, /roster, /control/memory, /control/tts).
+// endpoints (/health, /roster, /control/model, /control/tts).
 // ============================================================
 (function(){
   "use strict";
@@ -1212,7 +1157,7 @@
     board.appendChild(row("Port", location.port || (location.protocol==="https:"?"443":"80")));
     body.appendChild(board);
 
-    // Crew — /roster (+ a /control/memory badge when that endpoint is readable).
+    // Crew — /roster (+ a per-agent /control/model override input when control is on).
     var crewBox=el("div"); crewBox.appendChild(el("div","set-note","loading…"));
     body.appendChild(section("Crew", crewBox));
 
@@ -1232,29 +1177,38 @@
     requestAnimationFrame(function(){ if(backdrop) backdrop.classList.add("show"); });
 
     // ---- live reads (graceful: on 401/404/error a row shows "—" or is skipped) ----
-    fetch("/health",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(h){
+    // healthP is the SOURCE OF TRUTH for "control" here -- this whole IIFE is a separate
+    // scope from the main script's `controlOn`, so it cannot see that variable at all
+    // (was a real ReferenceError: fixed by reading control off this fetch's own result
+    // instead of reaching into a different closure).
+    var healthP=fetch("/health",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    healthP.then(function(h){
       vVer.textContent = (h&&h.version!=null) ? String(h.version) : "—";
       vCtl.textContent = (h&&h.control!=null) ? (h.control?"on":"off") : "—";
-    }).catch(function(){ vVer.textContent="—"; vCtl.textContent="—"; });
+    });
 
     var rosP=fetch("/roster",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-    var memP=fetch("/control/memory",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
     var mdlP=fetch("/control/model",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-    var cliP=fetch("/control/clitemplate",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-    Promise.all([rosP,memP,mdlP,cliP]).then(function(res){
-      var roster=(res[0]&&res[0].roster)||[], mem=(res[1]&&res[1].memory)||null, mdl=(res[2]&&res[2].model)||{};
-      var cli=(res[3]&&res[3].cli_template)||{};
+    var stP=fetch("/control/status",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+    Promise.all([rosP,mdlP,stP,healthP]).then(function(res){
+      var roster=(res[0]&&res[0].roster)||[], mdl=(res[1]&&res[1].model)||{};
+      var stat=(res[2]&&res[2].status)||{}, controlEnabled=!!(res[3]&&res[3].control);
       crewBox.innerHTML="";
       if(!roster.length){ crewBox.appendChild(el("div","set-note","No crew on the board.")); return; }
       roster.forEach(function(a){
         var r=el("div","set-crew");
         r.appendChild(el("span","nm", a.name||a.id));
         r.appendChild(el("span","rl", a.role||""));
-        if(mem && Object.prototype.hasOwnProperty.call(mem, a.id)){
-          var on=!!mem[a.id];
-          r.appendChild(el("span","set-badge"+(on?" on":""), on?"memory on":"memory off"));
+        // Last-turn status: a diagnostic surface, not authoritative -- a missing entry just
+        // means this agent hasn't engaged since the feature shipped, not that anything's wrong.
+        var st=stat[a.id];
+        if(st){
+          var stTxt=(st.ok?"✓ ":"⚠ "+(st.reason||"failed").slice(0,60)+" · ")+tage(st.at);
+          var stBadge=el("span","set-badge status"+(st.ok?" on":" err"), stTxt);
+          stBadge.title=st.ok ? "last turn OK, "+tage(st.at) : (st.reason||"turn failed");
+          r.appendChild(stBadge);
         }
-        if(controlOn){
+        if(controlEnabled){
           // The CLI parameter this agent's NEXT turn uses -- blank = the claude CLI's own current
           // default (no --model flag added). Written live to settings.json; the runner re-reads it
           // fresh every engage, so this takes effect on the agent's very next turn, no restart.
@@ -1271,58 +1225,32 @@
           inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); inp.blur(); } });
           inp.addEventListener("blur", save);
           r.appendChild(inp);
-
-          // Custom CLI: a free-typed list of argv tokens (one per line), for pointing this agent
-          // at any CLI, not just Claude -- {bin}/{prompt}/{persona}/{model} get substituted PER
-          // TOKEN (never a shell string), so no chat content can ever break out of its slot. v1
-          // is stateless-only: a template overrides the memory toggle for that agent (no --resume).
-          var cliBtn=el("button","cli-btn", cli[a.id] ? "CLI ✓" : "CLI…");
-          cliBtn.type="button"; cliBtn.title="Point this agent at a different CLI (advanced)";
-          var cliRow=el("div","cli-row"); cliRow.style.display="none";
-          var ta=document.createElement("textarea"); ta.className="cli-ta"; ta.rows=4;
-          ta.placeholder="one argv token per line, e.g.\n{bin}\n-p\n{prompt}\n--system-prompt\n{persona}\n\n(must include a {prompt} line; blank = default Claude CLI)";
-          ta.value=(cli[a.id]||[]).join("\n");
-          var cliErr=el("div","set-note cli-err");
-          var cliSave=el("button",null,"Save"); cliSave.type="button";
-          var cliClear=el("button",null,"Clear"); cliClear.type="button";
-          cliSave.addEventListener("click", function(){
-            var tokens=ta.value.split("\n").map(function(s){return s.trim();}).filter(function(s){return s.length;});
-            fetch("/control/clitemplate",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),
-              body:JSON.stringify({agent:a.id, tokens:tokens})})
-              .then(function(r){ return r.json(); })
-              .then(function(j){ if(j&&j.error){ cliErr.textContent=j.error; }
-                                  else { cliErr.textContent=""; cliBtn.textContent=tokens.length?"CLI ✓":"CLI…"; } })
-              .catch(function(){ cliErr.textContent="couldn't reach the server"; });
-          });
-          cliClear.addEventListener("click", function(){ ta.value=""; cliSave.click(); });
-          cliBtn.addEventListener("click", function(){ cliRow.style.display = cliRow.style.display==="none" ? "" : "none"; });
-          var cliBtns=el("div","cli-btns"); cliBtns.appendChild(cliSave); cliBtns.appendChild(cliClear);
-          cliRow.appendChild(ta); cliRow.appendChild(cliBtns); cliRow.appendChild(cliErr);
-          r.appendChild(cliBtn);
-          crewBox.appendChild(r);
-          crewBox.appendChild(cliRow);
         } else if(mdl[a.id]) {
           r.appendChild(el("span","set-badge on", "model: "+mdl[a.id]));
-          crewBox.appendChild(r);
-        } else {
-          crewBox.appendChild(r);
         }
+        crewBox.appendChild(r);
       });
     });
 
-    fetch("/control/tts",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(j){
+    Promise.all([fetch("/control/tts",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; }),healthP]).then(function(res){
+      var j=res[0], controlEnabled=!!(res[1]&&res[1].control);
       if(j){
         voiceBox.appendChild(row("Voices", j.muted?"muted":"on"));
         voiceBox.appendChild(row("Server speaker", j.server?"live":"not detected"));
         var frow=el("div","set-row"); frow.appendChild(el("span","k","Browser fallback"));
-        if(controlOn){
+        if(controlEnabled){
           var sel=el("select","voicemode-sel");
           [["auto","Auto (fallback to browser voices)"],["server-only","Server only (never fall back)"]]
             .forEach(function(o){ var op=el("option",null,o[1]); op.value=o[0]; if((j.mode||"auto")===o[0]) op.selected=true; sel.appendChild(op); });
           sel.addEventListener("change", function(){
+            // No local voiceMode assignment here: that variable lives in the OTHER (main)
+            // IIFE's scope -- inaccessible from this one, and reaching for it threw
+            // ReferenceError under this IIFE's "use strict" (silently swallowed by the
+            // .catch below, but the sync it was meant to do never happened). The main
+            // IIFE's loadTtsState() already polls /control/tts every 5s, so the server
+            // write below is enough on its own -- it just self-heals a beat later.
             fetch("/control/tts",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),
-              body:JSON.stringify({mode:sel.value})}).then(function(r){ return r.json(); })
-              .then(function(res){ if(res && res.mode) voiceMode=res.mode; }).catch(function(){});
+              body:JSON.stringify({mode:sel.value})}).catch(function(){});
           });
           frow.appendChild(sel);
         } else {

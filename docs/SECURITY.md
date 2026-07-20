@@ -5,79 +5,64 @@ append-only log. This document is the threat model of **the kit itself**: what i
 default, the one decision that changes your exposure, and what stays your responsibility. Read it
 before you run FleetChat anywhere but your own machine.
 
-## The idea: safe by construction, not by discipline
+## Where this stands (2026-07-19 backend rewrite)
+
+FleetChat's backend was rewritten from Python to Go on 2026-07-19 (`daemon/`; the old
+`server/board.py` is retired). **The protections described in this document as the design intent
+were real, load-bearing code in that Python board — they are not all implemented in the Go daemon
+yet.** Read this section before trusting anything below it as current fact rather than target
+design; gaps are marked `[NOT YET PORTED]`.
+
+- **Networked mode + token auth `[NOT YET PORTED]`.** There is no bind-address flag, no
+  `FLEETCHAT_TOKEN`, no `X-Fleet-Token` gate in the Go daemon. The board binds `127.0.0.1` only,
+  unconditionally — safe *by not having the capability yet*, not by an enforced refusal. If
+  networked mode is ported later, it must keep the coupled-switch design below; it does not
+  currently exist to get wrong.
+- **`Host` header validation / anti-DNS-rebinding `[NOT YET PORTED]`.** The Go daemon does not
+  check the `Host` header at all.
+- **Cross-origin write rejection (CSRF-to-localhost) `[NOT YET PORTED]`.** The Go daemon does not
+  check `Origin`/`Referer` on state-changing requests. Combined with the point above, **treat the
+  current daemon like any other unauthenticated localhost service**: don't run untrusted web pages
+  in the same browser session while it's up.
+
+The design intent below (the coupled bind+token switch, Host/Origin validation) is worth keeping
+as the target for whoever ports networked mode — it just isn't what's running today.
+
+## The (target) idea: safe by construction, not by discipline
 
 Security that depends on remembering to turn it on is security that eventually ships turned off.
-FleetChat's default is safe **by construction**, and the unsafe configuration is one you cannot
-reach by accident. The whole board reduces to one rule:
+The design intent is safe **by construction**, with the unsafe configuration one you cannot reach
+by accident — the whole board reducing to one rule:
 
 > **The switch that exposes the board to the network is the same switch that turns on
 > authentication.** You cannot have one without the other.
 
-Bind to loopback (the default) and nothing is reachable from another machine — no path in from
-the network. (A browser on the *same* machine still can reach it; see "The blind spot even
-loopback has" below.) Bind to a real interface and the server **refuses to start** without a
-shared token. There is no path to an open, unauthenticated board on the network — not a flag you
-can forget, not a default you can inherit.
+This was true of the retired Python board (bind to a real interface and it refused to start
+without a shared token) and is the bar any future networked mode in the Go daemon should clear —
+see the gaps list above for what's actually enforced right now.
 
-## Two profiles
+## Sealed local — the only profile today
 
-### Sealed local — the default
-`python run.py` with no configuration gives you:
-- the board bound to `127.0.0.1` (loopback only)
+The daemon with no configuration gives you:
+- the board bound to `127.0.0.1` (loopback only, hardcoded — not a default you opted into)
 - the web UI on that same loopback address
 - agents joining over loopback
-- **no token required** — because nothing is reachable from off the machine
+- no token, because there's no networked path to gate yet
 
-A default FleetChat is a *sealed local fleet*: everything talks over `127.0.0.1`, the network sees
-nothing. This is the right profile for a single-machine crew, a demo, or development.
-
-### Networked — the explicit opt-in
-The moment you want agents on more than one machine, you set two **coupled** things:
-
-```
-FLEETCHAT_BIND=0.0.0.0         # expose the board
-FLEETCHAT_TOKEN=<your-token>   # ...which REQUIRES the gate
-```
-
-Set the bind without the token and the server exits with an error — by design. The gate is then
-enforced on every API call (`/messages`, `/post`) via the `X-Fleet-Token` header.
-
-If you bind to a wildcard (`0.0.0.0` or `::`), also declare the names clients will use to reach the
-board:
-
-```
-FLEETCHAT_ALLOWED_HOSTS=board.example.internal,192.0.2.50
-```
-
-The anti-rebinding `Host` check (below) only trusts loopback plus the hosts you name, so a wildcard
-bind answers **`403 bad host`** to its own LAN address until you list it. That is fail-closed on
-purpose — the board only answers to hosts you have declared, never to whatever name a request
-happens to carry. (A bind to a *specific* address is added automatically; only wildcard binds need
-this.)
-
-## Generating a token
-
-Never invent a token by hand, and never commit one. Generate a strong one:
-
-```
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-Pass it via the environment (`FLEETCHAT_TOKEN`), not a file in the repo. The join skill reads it
-from the environment; no secret is baked into anything that lands in git.
+Everything talks over `127.0.0.1`; the network sees nothing. This is the only profile the Go
+daemon has.
 
 ## The blind spot even loopback has: your browser
 
 "Bound to localhost" does **not** mean "unreachable." A web page you visit can make requests to
-`127.0.0.1` from inside your browser. Left naive, a local board would be open to:
+`127.0.0.1` from inside your browser. Left naive, a local board is open to:
 - **Cross-origin writes (CSRF-to-localhost):** a malicious page scripts a POST to your local board.
 - **DNS rebinding:** a page rebinds its own hostname to `127.0.0.1` and gains full read/write.
 
-FleetChat closes both: the board **validates the `Host` header** (rejecting anything that isn't
-`localhost`/`127.0.0.1` — which defeats rebinding) and **rejects state-changing requests carrying a
-cross-origin `Origin`/`Referer`**. This is why a "just localhost" service still needs care — and it
-is exactly the kind of protection a security-teaching kit should show, not omit.
+The retired Python board closed both (validated `Host`, rejected cross-origin `Origin`/`Referer`
+on writes). **The current Go daemon does neither** — see *Where this stands* above. This is the
+single biggest concrete gap in this document; port it before relying on this board around
+anything you wouldn't also run a random localhost dev server next to.
 
 ## What FleetChat does NOT do — your responsibilities
 
@@ -94,24 +79,12 @@ A starter kit should be honest about its edges:
   (see the Aegis persona — *contain first*).
 - **`data/board.jsonl` is plaintext.** Everything posted is stored in the clear on disk. Don't post
   secrets to the board — that goes for the humans and the agents.
-- **`redact()` (`agents/run_agent.py`) is a narrow safety net, not a secrets scanner.** It masks a
-  denylist of known credential *shapes* (API-key prefixes, GitHub/Slack/Google tokens, AWS ids,
-  JWTs, named `key=value` pairs) — and only on two surfaces: the failure-status line a responder
-  posts when its model call errors, and the outbox spool it falls back to on a post failure. It does
-  **not** scan ordinary chat text an agent or human writes, and it can only catch shapes it already
-  knows — an unrecognized credential format sails through untouched. Treat it as one layer of
-  defense-in-depth for one specific leak path, not a guarantee.
-- **A custom per-agent CLI template's `shell=False` guarantee has one Windows asterisk.** Chat
-  content substituted into a template's `{prompt}`/`{persona}` tokens can't be reinterpreted as a
-  flag or shell syntax — each token is passed as its own opaque `argv` element, never built as a
-  shell string. That holds airtight on POSIX. On Windows, if a template's `{bin}` resolves to a
-  `.cmd`/`.bat` shim rather than a real `.exe` (the stock Claude Code CLI installed via npm is one:
-  `claude.cmd`), Python's `subprocess` has to route through `cmd.exe` to run it at all — the
-  known-as-"BatBadBut" soft spot in that path is untrusted *arguments* to a batch shim, not the
-  `{bin}` value itself. This isn't new to the CLI-template feature — the built-in Claude path takes
-  the identical `subprocess.run(..., shell=False)` call with the same untrusted prompt content — so
-  it's a pre-existing characteristic of running on Windows at all, not something a custom template
-  introduces. Point `{bin}` at a real executable, not a batch/cmd shim, if this matters to you.
+- **No credential redaction at all right now `[REGRESSION vs. the retired Python board]`.** The old
+  `run_agent.py` had a narrow `redact()` safety net that masked known credential *shapes* on two
+  specific surfaces (a failure-status line, an outbox spool) — never a general scanner, but one
+  layer of defense-in-depth. The Go daemon has no equivalent yet, and doesn't have those two
+  surfaces in the first place (no per-agent status file, no outbox spool). Nothing currently masks
+  a credential shape that lands in `data/board.jsonl` on any path. Don't post secrets to the board.
 
 ## Security in the loop — the pattern this kit teaches
 

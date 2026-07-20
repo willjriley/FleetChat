@@ -12,7 +12,7 @@ double-up). Only roster agents are voiced -- humans are not.
     python agents/speaker.py             # or standalone, against an already-running board
 
 Voices: each agent gets a stable, distinct English voice (American/British), assigned automatically.
-Override any in data/voices.json as {"agent-id": "voice_id"} (e.g. {"aegis": "am_fenrir"}).
+Override any in data/voices.json as {"agent-id": "voice_id"} (e.g. {"aegis": "am_adam"}).
 """
 import json
 import os
@@ -56,14 +56,14 @@ def _headers(extra=None):
 
 
 def _get_json(path):
-    with urllib.request.urlopen(urllib.request.Request(BOARD + path, headers=_headers()), timeout=6) as r:  # nosemgrep: dynamic-urllib-use-detected -- BOARD is FLEETCHAT_URL config (loopback default, :32); fixed http scheme + internal path, not attacker-controlled
+    with urllib.request.urlopen(urllib.request.Request(BOARD + path, headers=_headers()), timeout=6) as r:
         return json.load(r)
 
 
 def _post_json(path, obj):
     body = json.dumps(obj).encode("utf-8")
     req = urllib.request.Request(BOARD + path, data=body, headers=_headers({"Content-Type": "application/json"}))
-    urllib.request.urlopen(req, timeout=5).read()  # nosemgrep: dynamic-urllib-use-detected -- BOARD is FLEETCHAT_URL config (loopback default, :32); fixed http scheme + internal path, not attacker-controlled
+    urllib.request.urlopen(req, timeout=5).read()
 
 
 def _overrides():
