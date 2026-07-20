@@ -281,7 +281,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, rosterMap = {}, typingSet = {}, rosterList = [], serverTts = false, serverSeen = 0, ttsKnown = false, speakingSet = {}, voiceMode = "auto";
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, rosterMap = {}, typingSet = {}, rosterList = [], speakingSet = {}, voiceMode = "auto";
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -332,11 +332,12 @@
     // the browser fallback goes permanently inert -- no heartbeat timing, no boot race, no theme
     // desync, no process-supervision gap can ever matter, because this code path never runs at
     // all. Silence during a genuine speaker outage is the trade; never a wrong voice.
-    if(voiceMode==="server-only") return;
-    // Browser TTS is the FALLBACK: it stays silent until the server state is KNOWN (no boot race),
-    // and for 45s after the server speaker was last seen -- so a heartbeat missed mid-playback can
-    // never flip a stray robo-voice in while the server is still working a queue.
-    if(muted || !ttsKnown || serverTts || (Date.now()-serverSeen)<45000 || !speakReady || !window.speechSynthesis) return;
+    // DECOUPLED (2026-07-20): browser voices are gated ONLY by mute + the explicit
+    // "High-quality" (server-only) mode -- NO auto-stand-down on server detection.
+    // The browser and high-quality paths never interfere; you pick one. Browser
+    // speaks by default; picking High-quality silences the browser and the Kokoro
+    // speaker takes over.
+    if(muted || voiceMode==="server-only" || !speakReady || !window.speechSynthesis) return;
     var say=cleanForSpeech(text); if(!say) return;
     var u=new SpeechSynthesisUtterance(say); var v=voiceFor(sender); if(v) u.voice=v; u.rate=1.05;
     try{ speechSynthesis.speak(u); }catch(e){}
@@ -502,8 +503,7 @@
   function loadTtsState(){
     // if a server-side speaker is live, the browser TTS stands down (no double up)
     fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
-      .then(function(j){ if(j){ ttsKnown=true; serverTts=!!j.server; if(serverTts) serverSeen=Date.now();
-        if(j.mode) voiceMode=j.mode; } }).catch(function(){});
+      .then(function(j){ if(j && j.mode){ voiceMode=j.mode; } }).catch(function(){}); // sync the engine choice; browser voices are gated by voiceMode+mute now (decoupled)
   }
   function addAgent(){
     // native folder picker first (a real OS dialog on this machine); typed-path fallback
@@ -1232,33 +1232,65 @@
       });
     });
 
-    Promise.all([fetch("/control/tts",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; }),healthP]).then(function(res){
-      var j=res[0], controlEnabled=!!(res[1]&&res[1].control);
-      if(j){
-        voiceBox.appendChild(row("Voices", j.muted?"muted":"on"));
-        voiceBox.appendChild(row("Server speaker", j.server?"live":"not detected"));
-        var frow=el("div","set-row"); frow.appendChild(el("span","k","Browser fallback"));
-        if(controlEnabled){
-          var sel=el("select","voicemode-sel");
-          [["auto","Auto (fallback to browser voices)"],["server-only","Server only (never fall back)"]]
-            .forEach(function(o){ var op=el("option",null,o[1]); op.value=o[0]; if((j.mode||"auto")===o[0]) op.selected=true; sel.appendChild(op); });
-          sel.addEventListener("change", function(){
-            // No local voiceMode assignment here: that variable lives in the OTHER (main)
-            // IIFE's scope -- inaccessible from this one, and reaching for it threw
-            // ReferenceError under this IIFE's "use strict" (silently swallowed by the
-            // .catch below, but the sync it was meant to do never happened). The main
-            // IIFE's loadTtsState() already polls /control/tts every 5s, so the server
-            // write below is enough on its own -- it just self-heals a beat later.
-            fetch("/control/tts",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),
-              body:JSON.stringify({mode:sel.value})}).catch(function(){});
-          });
-          frow.appendChild(sel);
-        } else {
-          frow.appendChild(el("span","v", (j.mode||"auto")==="server-only" ? "server only" : "auto"));
+    Promise.all([
+      fetch("/control/tts",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; }),
+      fetch("/control/voices",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; }),
+      healthP
+    ]).then(function(res){
+      var j=res[0], vc=res[1]||{}, controlEnabled=!!(res[2]&&res[2].control);
+      if(!j){ voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on")); return; }
+      function post(path,obj){ return fetch(path,{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),body:JSON.stringify(obj||{})}).catch(function(){}); }
+      voiceBox.appendChild(row("Voices", j.muted?"muted (🔊 header button)":"on"));
+
+      // Engine picker -- fully DECOUPLED: pick Browser (built-in) OR High-quality (Kokoro); they never
+      // interfere (no auto-fallback). On/off stays the 🔊 header button, independent of the engine.
+      var curMode = (j.mode||"auto")==="server-only" ? "hq" : "browser";
+      var mrow=el("div","set-row"); mrow.appendChild(el("span","k","Voice engine"));
+      if(controlEnabled){
+        var sel=el("select","voicemode-sel");
+        [["browser","Browser (built-in)"],["hq","High-quality (Kokoro)"]].forEach(function(o){
+          var op=el("option",null,o[1]); op.value=o[0]; if(curMode===o[0]) op.selected=true; sel.appendChild(op); });
+        sel.addEventListener("change", function(){ setEngine(sel.value); });
+        mrow.appendChild(sel);
+      } else { mrow.appendChild(el("span","v", curMode==="hq"?"high-quality":"browser")); }
+      voiceBox.appendChild(mrow);
+
+      // High-quality (Kokoro) install state + ONE-CLICK download + speaker status.
+      var hqrow=el("div","set-row"); hqrow.appendChild(el("span","k","High-quality voices"));
+      var hqval=el("span","v"); hqrow.appendChild(hqval); voiceBox.appendChild(hqrow);
+      function renderHq(v){
+        v=v||{}; hqval.innerHTML=""; var dl=v.download||{};
+        if(dl.state==="downloading"){ hqval.textContent="downloading… "+(dl.log||""); return; }
+        if(!v.installed){
+          if(controlEnabled){
+            var b=el("button",null,"⬇ Download (~353 MB)");
+            b.style.cssText="cursor:pointer;border:1px solid var(--line);background:var(--chip);color:var(--ink);border-radius:7px;padding:3px 9px;font-size:12px";
+            b.addEventListener("click", function(){ b.disabled=true; b.textContent="starting…"; post("/control/voices/download").then(pollHq); });
+            hqval.appendChild(b);
+          } else { hqval.textContent="not installed"; }
+          if(dl.error){ hqval.appendChild(el("div","set-note","last attempt failed: "+dl.error)); }
+          return;
         }
-        voiceBox.appendChild(frow);
-      } else {
-        voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on"));
+        hqval.textContent = "installed ✓" + (v.speaker_running ? " · speaker live" : "");
+      }
+      function pollHq(){
+        var iv=setInterval(function(){
+          fetch("/control/voices",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(v){
+            if(!v) return; renderHq(v);
+            var st=(v.download||{}).state;
+            if(v.installed){ post("/control/speaker",{action:"start"}); }   // auto-start the speaker once ready
+            if(st==="done"||st==="error"||v.installed){ clearInterval(iv); }
+          }).catch(function(){}); }, 2000);
+      }
+      renderHq(vc);
+      function setEngine(m){
+        if(m==="browser"){ post("/control/tts",{mode:"browser"}); post("/control/speaker",{action:"stop"}); }
+        else { post("/control/tts",{mode:"server-only"});
+          fetch("/control/voices",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(v){
+            if(v&&v.installed){ post("/control/speaker",{action:"start"}); renderHq(v); }
+            else { post("/control/voices/download"); pollHq(); }   // download; speaker auto-starts when ready
+          }).catch(function(){});
+        }
       }
     }).catch(function(){
       voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on"));

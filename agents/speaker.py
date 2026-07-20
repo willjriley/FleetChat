@@ -8,8 +8,7 @@ speaker is live it heartbeats the board, so the UI's browser TTS stands DOWN aut
 double-up). Only roster agents are voiced -- humans are not.
 
     python scripts/download_voices.py    # once: fetch the engine + weights (~353 MB)
-    python run.py --speak                # board + crew + speaker
-    python agents/speaker.py             # or standalone, against an already-running board
+    python agents/speaker.py             # alongside a running board (start the board first)
 
 Voices: each agent gets a stable, distinct English voice (American/British), assigned automatically.
 Override any in data/voices.json as {"agent-id": "voice_id"} (e.g. {"aegis": "am_adam"}).
