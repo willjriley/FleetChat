@@ -101,7 +101,10 @@ func main() {
 	var settingsMu sync.Mutex
 	ttsMuted := false
 	voiceMode := "auto"
-	voiceAssign := map[string]string{}
+	// Restored from data/voices.json (see voiceassign.go): a voice assignment is
+	// a durable per-agent preference, not session state, and the same file is
+	// what the optional server-side speaker reads its overrides from.
+	voiceAssign := loadVoiceAssign(repoRoot)
 	modelOverride := map[string]string{}
 	var speakerSeen time.Time       // last /control/tts heartbeat from a real server-side speaker (e.g. fleet-speaker.bat), see speaker_active()'s 30s TTL in board.py
 	vm := newVoiceManager(repoRoot) // orchestrates the OPTIONAL Python HQ-voice sidecar (download + speaker) -- see voices.go
@@ -591,13 +594,28 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"error": "bad agent name"})
 			return
 		}
+		// body.Voice reaches DISK now, so it is validated like any other stored
+		// request input -- previously it was an unchecked free string. "off"
+		// stays the sentinel for clearing an assignment.
+		if body.Voice != "off" && !voiceIDRe.MatchString(body.Voice) {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "bad voice id"})
+			return
+		}
 		settingsMu.Lock()
 		if body.Voice == "off" {
 			delete(voiceAssign, body.Agent)
 		} else {
 			voiceAssign[body.Agent] = body.Voice
 		}
+		// Snapshot under the lock, write outside it: disk I/O never runs under
+		// settingsMu, and the speaker picks the change up on its next poll.
+		snapshot := make(map[string]string, len(voiceAssign))
+		for k, v := range voiceAssign {
+			snapshot[k] = v
+		}
 		settingsMu.Unlock()
+		saveVoiceAssign(repoRoot, snapshot)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "agent": body.Agent, "voice": body.Voice})
 	})
 
