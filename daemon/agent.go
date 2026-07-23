@@ -39,7 +39,7 @@ type rawClaudeLine struct {
 	// value needed to resume that exact conversation later. Capturing it is
 	// what makes restart-survival possible at all (see sessions.go).
 	SessionID string `json:"session_id"`
-	Message *struct {
+	Message   *struct {
 		Role    string `json:"role"`
 		Content []struct {
 			Type string `json:"type"`

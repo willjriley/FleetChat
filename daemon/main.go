@@ -737,7 +737,16 @@ func announceJoin(board *Board, id string, persona PersonaConfig) {
 func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 	entries := readRoster(repoRoot)
 	if entries == nil {
-		log.Printf("[daemon] no data/roster.json found -- starting with an empty crew")
+		// No durable roster yet (fresh setup, or data/ was wiped). Seed it from
+		// the DECLARED crew -- fleet.local.json (the real fleet, git-ignored) or
+		// fleet.json (the demo) -- the same fleet_file() source run.py reads, so
+		// the REAL configured lineup comes up instead of an empty board someone
+		// has to repopulate by hand. An empty "[]" roster (a deliberate kick-all)
+		// is distinct from nil here and is left untouched.
+		entries = seedRosterFromFleet(repoRoot)
+	}
+	if len(entries) == 0 {
+		log.Printf("[daemon] no roster and no declared crew (fleet.local.json/fleet.json) -- starting with an empty crew")
 		return
 	}
 	for _, e := range entries {
