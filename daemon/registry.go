@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"sync"
 	"time"
@@ -119,6 +120,14 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.agents[id]; ok {
+		// Refuse an id whose process is still being torn down. Returning the
+		// dying agent would hand the caller a corpse; creating a new one would
+		// put two live processes on one id. RestartAll doesn't hit this -- its
+		// Kill now returns only after confirmed exit -- but a concurrent
+		// respawn request could.
+		if existing.dying.Load() {
+			return nil, fmt.Errorf("agent %q is still shutting down", id)
+		}
 		return existing, nil // idempotent: spawning an existing id just returns it, never a duplicate
 	}
 	a, stdout, err := NewAgent(id, opts)
@@ -158,23 +167,35 @@ func (r *Registry) Get(id string) (*Agent, bool) {
 	return a, ok
 }
 
-// Kill removes the agent from the registry and terminates its process
-// UNDER THE SAME LOCK as the lookup+delete -- no window where a concurrent
-// Spawn(id) could race a Kill(id) and leave two different agents briefly
-// both claiming that id. This is the exact property tonight's real bug
-// lacked: respawn and restart each had their own separate bookkeeping, so
-// they could disagree. Here there's only one map and it's never touched
-// outside this file.
+// Kill terminates the agent and only THEN releases its id.
+//
+// It used to delete the map entry first and kill afterwards, which left a
+// window where the id looked free while its process was still alive: Spawn
+// would happily start a second process for the same agent, and the dying one's
+// readLoop was still wired to onMessage, so it could keep posting to the board
+// under that id. Now the entry stays until Agent.Kill confirms the process is
+// actually gone, and Kill marks the agent dying so a concurrent Spawn refuses
+// the id rather than handing back a corpse.
+//
+// The eviction is guarded by identity (cur == a), matching onExit: readLoop's
+// own onExit may have already removed this agent and a replacement may have
+// taken the id, and this must not delete that replacement.
 func (r *Registry) Kill(id string) error {
 	r.mu.Lock()
 	a, ok := r.agents[id]
+	r.mu.Unlock()
 	if !ok {
-		r.mu.Unlock()
 		return fmt.Errorf("no such agent %q", id)
 	}
-	delete(r.agents, id)
+
+	err := a.Kill() // blocks until the process is confirmed gone (or times out)
+
+	r.mu.Lock()
+	if cur, ok := r.agents[id]; ok && cur == a {
+		delete(r.agents, id)
+	}
 	r.mu.Unlock()
-	return a.Kill()
+	return err
 }
 
 func (r *Registry) All() []*Agent {
@@ -207,10 +228,15 @@ func (r *Registry) RestartAll() int {
 	return n
 }
 
-// KillAll stops every agent -- shared by the tray's "Quit" and POST
-// /shutdown, same reasoning as RestartAll above.
+// KillAll stops every agent -- shared by the tray's "Quit" and POST /shutdown.
+// Errors are LOGGED, not discarded: a failed kill
+// means a process that outlived the registry entry -- untracked, unreachable
+// through the registry, and still able to produce output. Reporting success
+// while that survives is the fail-open case worth being loud about.
 func (r *Registry) KillAll() {
 	for _, a := range r.All() {
-		_ = r.Kill(a.id)
+		if err := r.Kill(a.id); err != nil {
+			log.Printf("[registry] kill %q failed -- process may have outlived the registry: %s", a.id, err)
+		}
 	}
 }
