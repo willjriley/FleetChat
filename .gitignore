@@ -16,8 +16,21 @@ personas.local/
 __pycache__/
 *.pyc
 
-# Go daemon build output/logs -- daemon/*.go is the source of truth, never the binary
-daemon/daemon.exe
+# Go daemon build output/logs -- daemon/*.go is the source of truth, never the binary.
+#
+# Deliberately NOT pinned to a single filename. The module is `daemon-skeleton`, so
+# `go build` emits daemon-skeleton.exe on Windows and an EXTENSIONLESS
+# daemon-skeleton on linux/darwin. The previous `daemon/daemon.exe` rule named a
+# file the module has never produced, so both real artifacts (~20MB together) sat
+# untracked-but-unignored, one `git add -A` away from a public repo.
+#
+# That is not just bloat: these binaries embed the builder's absolute source path
+# (verified -- `C:/Users/<name>` is greppable in both), so committing one leaks a
+# box-local path into public history. `*.test` catches `go test -c` output on POSIX;
+# `*.exe` already covers its Windows counterpart.
+daemon/*.exe
+daemon/daemon-skeleton
+daemon/*.test
 daemon/*.log
 
 # local-only working docs (audit briefs, notes, scratch) -- never committed
