@@ -91,7 +91,7 @@ type AgentOptions struct {
 
 // NewAgent starts the subprocess and builds the Agent, but deliberately does
 // NOT start readLoop -- the caller (Registry.Spawn) must finish setting
-// persona/onExit/onMessage/onTyping and only THEN call Start(). Those fields
+// persona/onExit/onMessage/onTyping/onActivity and only THEN call Start(). Those fields
 // used to get set after `go a.readLoop(stdout)` had already been kicked off
 // here, which meant a real (if narrow -- subprocess launch latency almost
 // always hides it) data race: a fast-starting process could reach route()'s
@@ -160,7 +160,7 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 }
 
 // Start begins reading the subprocess's output. Call it only after every
-// field readLoop/route() touch (persona, onExit, onMessage, onTyping) is
+// field readLoop/route() touch (persona, onExit, onMessage, onTyping, onActivity) is
 // already set -- see NewAgent's doc comment.
 func (a *Agent) Start(stdout io.Reader) {
 	go a.readLoop(stdout)

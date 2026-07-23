@@ -19,9 +19,14 @@ import (
 //
 // So the two failure modes are asymmetric: too short = a wrong "not typing"
 // during a legitimate long tool call, too long = a stuck "…" lingers a bit
-// before clearing. Five minutes clears any realistic tool call while still
-// bounding staleness -- against the bug this fixes (an indicator stuck for 25+
-// minutes and never clearing) it is a complete fix either way.
+// before clearing. Fail toward the less-wrong state: a missing indicator is
+// cosmetic, a permanently stuck one is the bug being fixed.
+//
+// Five minutes makes a mid-turn expiry RARE, not impossible -- an agent that
+// spawns subagents or runs a long build can exceed it, and because TouchTyping
+// never resurrects, any expiry mid-turn stays wrong for the rest of that turn.
+// That residual is accepted here; curing it means fixing the pendingPrivate
+// accounting this TTL sits under, not enlarging the constant.
 const typingTTL = 5 * time.Minute
 
 var validID = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
@@ -60,6 +65,13 @@ func NewRegistry() *Registry {
 // So: back to a TTL, for the same reason board.py had one. The point of a TTL
 // here is bounded staleness REGARDLESS of why the "off" was missed -- it is a
 // safety net, not a replacement for the explicit clear.
+//
+// LOAD-BEARING ASSUMPTION, stated so it is not silently relied on: the net only
+// reaps an idle-but-alive agent because such an agent is EVENT-SILENT, and
+// route() refreshes on ANY event. If the CLI ever emits idle keepalives, every
+// keepalive would refresh the entry and a stuck "…" would outlive the TTL
+// indefinitely. True for the desync this fixes; recheck it if the event stream
+// gains a heartbeat.
 func (r *Registry) SetTyping(id string, on bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
