@@ -17,7 +17,11 @@ __pycache__/
 *.pyc
 
 # Go daemon build output/logs -- daemon/*.go is the source of truth, never the binary
-daemon/daemon.exe
+# Any Go build output here, not just one name: the module builds
+# daemon-skeleton.exe, so pinning a single filename left a 10MB binary
+# showing as untracked after every local build -- one `git add -A` from
+# landing in a public repo (and Go binaries embed absolute source paths).
+daemon/*.exe
 daemon/*.log
 
 # local-only working docs (audit briefs, notes, scratch) -- never committed
