@@ -32,6 +32,11 @@ type NormalizedEvent struct {
 type rawClaudeLine struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
+	// SessionID arrives on the system/init line. It was previously parsed off
+	// and thrown away -- route() noted "session started" and discarded the one
+	// value needed to resume that exact conversation later. Capturing it is
+	// what makes restart-survival possible at all (see sessions.go).
+	SessionID string `json:"session_id"`
 	Message *struct {
 		Role    string `json:"role"`
 		Content []struct {
@@ -53,6 +58,13 @@ type Agent struct {
 	onExit    func()                        // set by the registry: cleans up bookkeeping if the process dies on its OWN
 	onMessage func(agentID, text string)    // set by the registry: feeds this agent's replies back into the shared Board
 	onTyping  func(agentID string, on bool) // set by the registry: drives GET /typing's animated "…"
+	// onSession fires once per process, when system/init reports the claude
+	// session id. The registry persists it so the NEXT spawn of this agent id
+	// can --resume this exact conversation. Guarded by a.mu like the others.
+	onSession func(agentID, sessionID string)
+	// sessionID is this process's live session, "" until init arrives. Also
+	// serves as the resume-succeeded signal: still "" means init never came.
+	sessionID string
 	// pendingPrivate is a FIFO queue, not a single flag: this process can have
 	// MORE than one turn in flight (a board reply and a private reply sent
 	// close together both queue on the same stdin), and "result" events
@@ -83,6 +95,12 @@ type AgentOptions struct {
 	Model   string // "" = whatever the claude CLI's own default is
 	Persona string // "" = claude's own default persona; replaces it wholesale, same as FleetChat's own claude_reply() pattern
 	Folder  string // "" = no project folder; matches run_agent.py's FLEETCHAT_AGENT_DIR / --add-dir
+	// ResumeSession is this agent's OWN prior claude session id ("" = start
+	// fresh). Set from data/sessions.json on respawn, which is what makes an
+	// agent survive a board restart with its memory intact. Per-agent by
+	// construction -- see sessions.go for why the --continue flag cannot be
+	// used here without agents inheriting each other's conversations.
+	ResumeSession string
 }
 
 // NewAgent starts the subprocess and builds the Agent, but deliberately does
@@ -109,6 +127,13 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	}
 	if opts.Folder != "" {
 		args = append(args, "--add-dir", opts.Folder)
+	}
+	// Resume THIS agent's own prior conversation. Validated before use because
+	// it reaches the child as an argv element and the file it came from is
+	// hand-editable; an id that fails the shape check is dropped and the agent
+	// starts fresh rather than being passed through to the CLI.
+	if opts.ResumeSession != "" && validSessionID.MatchString(opts.ResumeSession) {
+		args = append(args, "--resume", opts.ResumeSession)
 	}
 	claudeBin := "claude"
 	if env := os.Getenv("FLEETCHAT_CLAUDE"); env != "" {
@@ -201,6 +226,16 @@ func (a *Agent) route(raw rawClaudeLine, rawLine string) {
 	switch raw.Type {
 	case "system":
 		if raw.Subtype == "init" {
+			// init is also the "this process is genuinely live" signal, which is
+			// what lets Registry tell a successful resume from a rejected one:
+			// a --resume against an expired id dies BEFORE emitting init.
+			a.mu.Lock()
+			a.sessionID = raw.SessionID
+			cb := a.onSession
+			a.mu.Unlock()
+			if cb != nil && raw.SessionID != "" {
+				cb(a.id, raw.SessionID)
+			}
 			a.broadcast(NormalizedEvent{AgentID: a.id, Type: "system", Detail: "session started"})
 		}
 	case "rate_limit_event":

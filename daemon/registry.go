@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"sync"
 )
@@ -19,10 +20,24 @@ type Registry struct {
 	agents    map[string]*Agent
 	onMessage func(agentID, text string) // wired once, from main.go, to Board.Post
 	typing    map[string]bool            // mirrors run_agent.py's board.set_typing: on for the duration of a live turn
+	// repoRoot locates data/sessions.json. "" disables session persistence
+	// entirely (used by tests), which degrades to today's behaviour -- every
+	// spawn starts fresh -- rather than erroring.
+	repoRoot string
 }
 
 func NewRegistry() *Registry {
 	return &Registry{agents: make(map[string]*Agent), typing: make(map[string]bool)}
+}
+
+// NewRegistryWithRoot is the production constructor: repoRoot enables per-agent
+// session persistence (data/sessions.json), so a restarted agent resumes its own
+// conversation instead of waking with amnesia. NewRegistry stays as-is so the
+// existing tests keep their no-persistence behaviour explicitly.
+func NewRegistryWithRoot(repoRoot string) *Registry {
+	r := NewRegistry()
+	r.repoRoot = repoRoot
+	return r
 }
 
 // SetTyping/TypingNow back GET /typing -- the sidebar's animated "…" next to
@@ -61,11 +76,28 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 	if existing, ok := r.agents[id]; ok {
 		return existing, nil // idempotent: spawning an existing id just returns it, never a duplicate
 	}
+	// Resume this agent's OWN prior conversation if we have one on disk. An
+	// explicit ResumeSession from the caller wins, so a deliberate "start this
+	// one fresh" is never silently overridden by the stored id.
+	attemptedResume := ""
+	if r.repoRoot != "" && opts.ResumeSession == "" {
+		if sid, ok := loadSessions(r.repoRoot)[id]; ok {
+			opts.ResumeSession = sid
+			attemptedResume = sid
+		}
+	}
 	a, stdout, err := NewAgent(id, opts)
 	if err != nil {
 		return nil, err
 	}
 	a.persona = persona
+	// Persist the live session id so the NEXT spawn of this id can resume it.
+	// Fires from readLoop's goroutine on system/init, so it must not touch r.mu
+	// -- saveSession has its own file lock.
+	if r.repoRoot != "" {
+		root := r.repoRoot
+		a.onSession = func(agentID, sessionID string) { saveSession(root, agentID, sessionID) }
+	}
 	// If this agent's process ever dies on its own (crash, an unrecoverable
 	// auth error, anything NOT routed through Registry.Kill), this is what
 	// keeps the registry honest instead of listing a dead agent as alive.
@@ -78,6 +110,20 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 			delete(r.agents, id)
 		}
 		r.mu.Unlock()
+		// A resume that never reached system/init did not work -- an expired or
+		// server-side-deleted session is the ordinary cause. Drop the stored id
+		// so the next spawn starts clean instead of retrying a dead session
+		// forever, which would turn one stale id into a permanent respawn loop.
+		// Deliberately OUTSIDE r.mu: this does file I/O.
+		if attemptedResume != "" && r.repoRoot != "" {
+			a.mu.Lock()
+			live := a.sessionID
+			a.mu.Unlock()
+			if live == "" {
+				log.Printf("[agent %s] resume of session %s never initialised -- forgetting it; next start will be fresh", id, attemptedResume)
+				forgetSession(r.repoRoot, id)
+			}
+		}
 	}
 	if r.onMessage != nil {
 		a.onMessage = r.onMessage

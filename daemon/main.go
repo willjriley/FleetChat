@@ -61,7 +61,10 @@ func main() {
 
 	webDir := filepath.Join(repoRoot, "server", "web")
 
-	reg := NewRegistry()
+	// WithRoot: enables data/sessions.json, so agents resume their own
+	// conversations across a board restart instead of waking blank while the
+	// UI still shows the full history back to them.
+	reg := NewRegistryWithRoot(repoRoot)
 	board := NewBoard(reg, filepath.Join(repoRoot, "data", "board.jsonl"))
 	reg.onMessage = func(agentID, text string) {
 		// An agent's reply carries its routing as a structured >>to: directive
