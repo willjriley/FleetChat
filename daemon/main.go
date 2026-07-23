@@ -91,16 +91,19 @@ func main() {
 	// board's onStart, so it runs on every Start (initial boot AND "Start board").
 	var bs *boardServer
 
-	// Lightweight in-memory settings: voice assignments, model overrides, and
-	// the mute flag. None of this has a real backend behind it yet (no
-	// server-side TTS speaker, no --model wiring on respawn), so it's kept
-	// simple and in-memory rather than built out to match settings.json's
-	// full on-disk persistence -- good enough for the Settings modal and
-	// slash commands to work correctly within a session, not a false promise
-	// of surviving a restart.
+	// Lightweight in-memory settings: voice assignments and model overrides.
+	// Those two still have no real backend behind them (no --model wiring on
+	// respawn), so they stay in-memory -- good enough for the Settings modal
+	// and slash commands within a session, not a false promise of surviving a
+	// restart.
+	//
+	// ttsMuted/voiceMode are the EXCEPTION and are now persisted (settings.go).
+	// The original "no server-side TTS speaker" justification for keeping them
+	// in-memory stopped being true once the Kokoro sidecar landed: losing
+	// voiceMode on restart silently reverted it to "auto", which let the
+	// browser speech fallback talk OVER the server-side speaker.
 	var settingsMu sync.Mutex
-	ttsMuted := false
-	voiceMode := "auto"
+	ttsMuted, voiceMode := loadVoicePrefs(repoRoot, false, "auto")
 	voiceAssign := map[string]string{}
 	modelOverride := map[string]string{}
 	var speakerSeen time.Time       // last /control/tts heartbeat from a real server-side speaker (e.g. fleet-speaker.bat), see speaker_active()'s 30s TTL in board.py
@@ -518,16 +521,34 @@ func main() {
 			return
 		}
 		if body.Mode != "" {
+			// Allowlist: voiceMode decides whether the browser speech path runs at
+			// all, so it is a control value, not free text. An unknown mode would
+			// be stored and then read by the UI as "not server-only" -- i.e. it
+			// would silently re-enable the browser voices. Reject instead.
+			if body.Mode != "auto" && body.Mode != "server-only" {
+				settingsMu.Unlock()
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "mode must be auto or server-only"})
+				return
+			}
 			voiceMode = body.Mode
+			mSnap := ttsMuted
 			settingsMu.Unlock()
+			// Persist AFTER unlocking: disk I/O never runs under settingsMu.
+			saveVoicePrefs(repoRoot, mSnap, body.Mode)
 			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "mode": body.Mode})
 			return
 		}
-		if body.Muted != nil {
+		changed := body.Muted != nil
+		if changed {
 			ttsMuted = *body.Muted
 		}
-		m := ttsMuted
+		m, mode := ttsMuted, voiceMode
 		settingsMu.Unlock()
+		if changed {
+			// Persist AFTER unlocking: disk I/O never runs under settingsMu.
+			saveVoicePrefs(repoRoot, m, mode)
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "muted": m})
 	})
 
