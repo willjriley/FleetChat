@@ -615,7 +615,13 @@ func main() {
 			snapshot[k] = v
 		}
 		settingsMu.Unlock()
-		saveVoiceAssign(repoRoot, snapshot)
+		if serr := saveVoiceAssign(repoRoot, snapshot); serr != nil {
+			// Don't fail the request -- the in-memory map IS updated, so the
+			// change is live for this session. But say so loudly: the gap
+			// between "applied" and "applied AND durable" is precisely the bug
+			// this persistence exists to close.
+			log.Printf("[voice] assignment applied in memory but NOT persisted: %s", serr)
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "agent": body.Agent, "voice": body.Voice})
 	})
 

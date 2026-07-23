@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,9 +32,42 @@ func TestLoadVoiceAssignCorruptFile(t *testing.T) {
 }
 
 // THE REGRESSION: an assignment must survive a daemon restart.
+// A save that cannot reach disk must REPORT it rather than returning silently:
+// the caller logs "applied but not persisted" instead of implying durability.
+func TestSaveVoiceAssignReportsFailure(t *testing.T) {
+	root := t.TempDir()
+	// data/ occupied by a FILE, so creating the directory (and thus the write)
+	// cannot succeed.
+	if err := os.WriteFile(filepath.Join(root, "data"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveVoiceAssign(root, map[string]string{"alice": "af_heart"}); err == nil {
+		t.Fatal("save should have reported a failure instead of silently succeeding")
+	}
+}
+
+// A successful save leaves no .tmp.<pid> litter behind.
+func TestSaveVoiceAssignLeavesNoTempFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := saveVoiceAssign(root, map[string]string{"alice": "af_heart"}); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".tmp.") {
+			t.Fatalf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
 func TestVoiceAssignRoundTrips(t *testing.T) {
 	root := t.TempDir()
-	saveVoiceAssign(root, map[string]string{"alice": "af_heart", "bob": "am_echo"})
+	if err := saveVoiceAssign(root, map[string]string{"alice": "af_heart", "bob": "am_echo"}); err != nil {
+		t.Fatal(err)
+	}
 	m := loadVoiceAssign(root)
 	if m["alice"] != "af_heart" || m["bob"] != "am_echo" {
 		t.Fatalf("assignment did not survive: %v", m)
@@ -79,8 +113,12 @@ func TestVoiceIDPattern(t *testing.T) {
 // from the map, then the whole map is written) actually removes it on disk.
 func TestSaveVoiceAssignReplacesFile(t *testing.T) {
 	root := t.TempDir()
-	saveVoiceAssign(root, map[string]string{"alice": "af_heart", "bob": "am_echo"})
-	saveVoiceAssign(root, map[string]string{"alice": "af_heart"})
+	if err := saveVoiceAssign(root, map[string]string{"alice": "af_heart", "bob": "am_echo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveVoiceAssign(root, map[string]string{"alice": "af_heart"}); err != nil {
+		t.Fatal(err)
+	}
 	m := loadVoiceAssign(root)
 	if _, gone := m["bob"]; gone {
 		t.Fatalf("cleared assignment should not persist: %v", m)

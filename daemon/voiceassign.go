@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 )
 
 // voiceassign.go -- persistence for the per-agent voice map.
@@ -66,24 +68,47 @@ func loadVoiceAssign(repoRoot string) map[string]string {
 }
 
 // saveVoiceAssign persists the map. Atomic temp+rename with a PID-unique temp
-// name, matching threads.go/roster.go: the speaker may be reading this file
-// concurrently, and a rename means it sees either the whole old map or the
-// whole new one, never a half-written one. Best-effort -- a failed save must
-// never break the live request.
-func saveVoiceAssign(repoRoot string, m map[string]string) {
+// name: the speaker polls this file, so a rename means it sees either the whole
+// old map or the whole new one, never a half-written one.
+//
+// The rename's error is CHECKED and returned. roster.go returns it,
+// threads.go discards it -- those two disagree and this follows roster.go,
+// because the rename is both the last step and the most failure-prone one.
+// On Windows os.Rename is MoveFileEx(MOVEFILE_REPLACE_EXISTING), which fails
+// with a sharing violation while another process holds the destination open
+// without FILE_SHARE_DELETE -- and the speaker reading this file is exactly
+// that process. Swallowing it would leave the temp file behind AND lose the
+// assignment on restart, i.e. silently reintroduce the forgetting bug this
+// whole change exists to fix, through a narrower window. Durability is the
+// point here, so "best-effort" is the wrong posture for this one step.
+//
+// Retried briefly: a sharing violation is transient, clearing as soon as the
+// reader closes the handle.
+func saveVoiceAssign(repoRoot string, m map[string]string) error {
 	voicesFileMu.Lock()
 	defer voicesFileMu.Unlock()
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	if os.MkdirAll(filepath.Join(repoRoot, "data"), 0o755) != nil {
-		return
+	if err := os.MkdirAll(filepath.Join(repoRoot, "data"), 0o755); err != nil {
+		return err
 	}
 	path := voicesPath(repoRoot)
 	tmp := path + ".tmp." + itoa(os.Getpid())
-	if os.WriteFile(tmp, b, 0o644) != nil {
-		return
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
 	}
-	os.Rename(tmp, path)
+	var rerr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if rerr = os.Rename(tmp, path); rerr == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 40 * time.Millisecond)
+	}
+	// Give up: remove the temp rather than leaving .tmp.<pid> files to
+	// accumulate, and surface the failure so the caller can log it instead of
+	// reporting a success that never reached disk.
+	os.Remove(tmp)
+	return fmt.Errorf("persist voice assignments: %w", rerr)
 }
