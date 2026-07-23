@@ -135,6 +135,14 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 		claudeBin = env // matches run_agent.py's own override -- a scheduled-task/service launch context may not have "claude" resolvable on PATH at all
 	}
 	cmd := exec.Command(claudeBin, args...)
+	// Must happen BEFORE Start: SysProcAttr is read at fork time, so setting it
+	// afterwards is silently ignored. On POSIX this makes the child its own
+	// process-group leader, which is the whole precondition killProcessTree
+	// relies on -- without it kill(-pid) names no existing group, returns
+	// ESRCH, and the "tree kill" quietly does nothing while the CLI's children
+	// survive as orphans. No-op on Windows, where taskkill /T walks the real
+	// parent/child links instead.
+	configureProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdin pipe: %w", err)

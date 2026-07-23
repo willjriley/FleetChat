@@ -7,7 +7,15 @@ import (
 	"strconv"
 )
 
+// configureProcessGroup is a no-op on Windows: taskkill /T walks the real
+// parent/child relationships, so no group setup is needed for killProcessTree
+// to find descendants. The POSIX build genuinely needs its counterpart.
+func configureProcessGroup(cmd *exec.Cmd) {}
+
 // killProcessTree terminates pid AND its descendants.
+//
+// The caller must only invoke this while the process is known unreaped -- see
+// the POSIX counterpart for why. Agent.Kill checks the exited channel first.
 //
 // os.Process.Kill() on Windows is TerminateProcess, which kills only the named
 // process -- the CLI's own children (node, tool subprocesses, nested agents)
