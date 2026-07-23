@@ -53,6 +53,10 @@ type Agent struct {
 	onExit    func()                        // set by the registry: cleans up bookkeeping if the process dies on its OWN
 	onMessage func(agentID, text string)    // set by the registry: feeds this agent's replies back into the shared Board
 	onTyping  func(agentID string, on bool) // set by the registry: drives GET /typing's animated "…"
+	// onActivity is a liveness ping, NOT a state change: every event from this
+	// agent refreshes its typing entry's TTL so a long-running turn keeps its
+	// "…". It only refreshes an entry that already exists (see TouchTyping).
+	onActivity func(agentID string)
 	// pendingPrivate is a FIFO queue, not a single flag: this process can have
 	// MORE than one turn in flight (a board reply and a private reply sent
 	// close together both queue on the same stdin), and "result" events
@@ -198,6 +202,12 @@ func (a *Agent) readLoop(stdout io.Reader) {
 }
 
 func (a *Agent) route(raw rawClaudeLine, rawLine string) {
+	// ANY event is proof this agent is still working -- refresh its typing TTL
+	// before dispatching, so a slow turn never has its "…" reaped mid-flight.
+	// Cheap and unconditional: TouchTyping is a no-op unless already typing.
+	if a.onActivity != nil {
+		a.onActivity(a.id)
+	}
 	switch raw.Type {
 	case "system":
 		if raw.Subtype == "init" {
