@@ -7,10 +7,22 @@ import (
 	"time"
 )
 
-// typingTTL bounds how long a typing entry can survive without fresh activity
-// from the agent. See SetTyping's comment for why a TTL is required rather than
-// a plain bool.
-const typingTTL = 90 * time.Second
+// typingTTL bounds how long a typing entry survives without fresh activity from
+// the agent. See SetTyping's comment for why a TTL is required at all.
+//
+// Sizing it: the CLI runs with --include-partial-messages, so a generating turn
+// emits stream events continuously and TouchTyping keeps refreshing this. The
+// gap that matters is a turn blocked in a long TOOL call, which can be silent
+// for minutes. Because TouchTyping deliberately never re-creates a reaped entry
+// (a late event must not resurrect a cleared indicator), reaping too eagerly
+// would drop the "…" mid-turn and leave it off for the rest of that turn.
+//
+// So the two failure modes are asymmetric: too short = a wrong "not typing"
+// during a legitimate long tool call, too long = a stuck "…" lingers a bit
+// before clearing. Five minutes clears any realistic tool call while still
+// bounding staleness -- against the bug this fixes (an indicator stuck for 25+
+// minutes and never clearing) it is a complete fix either way.
+const typingTTL = 5 * time.Minute
 
 var validID = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
 

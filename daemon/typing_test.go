@@ -66,6 +66,22 @@ func TestTouchTypingKeepsALongTurnAlive(t *testing.T) {
 	}
 }
 
+// A turn blocked in a long TOOL call emits no stream events, so nothing
+// refreshes the entry. It must NOT be reaped for a realistic tool duration --
+// otherwise the dots drop mid-turn and, since TouchTyping never re-creates,
+// stay off for the rest of that turn.
+func TestTypingSurvivesALongSilentToolCall(t *testing.T) {
+	r := NewRegistry()
+	r.SetTyping("alice", true)
+	r.mu.Lock()
+	r.typing["alice"] = time.Now().Add(-2 * time.Minute) // silent 2min tool call
+	r.mu.Unlock()
+
+	if !typingHas(r, "alice") {
+		t.Fatal("a 2min silent tool call must not be reaped as stale")
+	}
+}
+
 // TouchTyping must NOT create an entry -- a late stray event after a turn ended
 // must never resurrect the indicator.
 func TestTouchTypingDoesNotResurrect(t *testing.T) {
