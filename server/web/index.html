@@ -294,7 +294,18 @@
   // ---------- agent voices: the browser's own speech synthesis (zero dependency) ----------
   var muted = localStorage.getItem("fleetchat_muted")==="1";
   var speakReady = false, voices = [];
-  function loadVoices(){ try{ voices=(window.speechSynthesis && speechSynthesis.getVoices())||[]; }catch(e){} }
+  // ENGLISH-ONLY (fix): getVoices() returns EVERY installed system voice, including non-English
+  // ones (ru-RU, zh-CN, ...). voiceFor()'s hash fallback indexes this list directly, so any agent
+  // with no VOICE_MAP entry could deterministically land on e.g. a Russian voice and read English
+  // text with it. Filter to en-* here so both the preference match and the fallback can only ever
+  // pick an English voice. Falls back to the unfiltered list if the platform exposes no en-* voice.
+  function loadVoices(){
+    try{
+      var all=(window.speechSynthesis && speechSynthesis.getVoices())||[];
+      var en=all.filter(function(v){ return /^en\b|^en[-_]/i.test(v.lang||""); });
+      voices = en.length ? en : all;
+    }catch(e){}
+  }
   if(window.speechSynthesis){ loadVoices(); try{ speechSynthesis.onvoiceschanged=loadVoices; }catch(e){} }
   // OPTIONAL, EXAMPLE per-agent voice assignment. Each name maps to an ordered list of preferred
   // browser voices (case-insensitive substring match against installed voices); the first present
