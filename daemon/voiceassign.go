@@ -104,7 +104,9 @@ func saveVoiceAssign(repoRoot string, m map[string]string) error {
 		if rerr = os.Rename(tmp, path); rerr == nil {
 			return nil
 		}
-		time.Sleep(time.Duration(attempt+1) * 40 * time.Millisecond)
+		if attempt < 2 { // no point sleeping after the last attempt
+			time.Sleep(time.Duration(attempt+1) * 40 * time.Millisecond)
+		}
 	}
 	// Give up: remove the temp rather than leaving .tmp.<pid> files to
 	// accumulate, and surface the failure so the caller can log it instead of
