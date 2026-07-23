@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // NormalizedEvent is the daemon's OWN internal shape -- deliberately not just
@@ -53,6 +55,20 @@ type Agent struct {
 	onExit    func()                        // set by the registry: cleans up bookkeeping if the process dies on its OWN
 	onMessage func(agentID, text string)    // set by the registry: feeds this agent's replies back into the shared Board
 	onTyping  func(agentID string, on bool) // set by the registry: drives GET /typing's animated "…"
+	// exited is closed once this agent's process is CONFIRMED gone: stdout
+	// drained, stderr drained, and cmd.Wait() returned. Kill() blocks on it so
+	// "killed" means "actually dead", not "signal delivered".
+	exited chan struct{}
+	// stderrDone is closed when the stderr scanner finishes. cmd.Wait() closes
+	// the pipes, and the os/exec docs are explicit that calling Wait before all
+	// pipe reads have completed is a race -- so Wait happens only after BOTH
+	// readers are done.
+	stderrDone chan struct{}
+	// dying marks an agent whose Kill is underway. Spawn refuses to hand back a
+	// dying agent, so an id cannot be reused while its previous process is
+	// still tearing down. Atomic rather than mutex-guarded to avoid nesting a
+	// second lock inside the registry's.
+	dying atomic.Bool
 	// pendingPrivate is a FIFO queue, not a single flag: this process can have
 	// MORE than one turn in flight (a board reply and a private reply sent
 	// close together both queue on the same stdin), and "result" events
@@ -132,12 +148,14 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	}
 
 	a := &Agent{
-		id:   id,
-		opts: opts,
-		cmd:  cmd,
-		in:   bufio.NewWriter(stdin),
-		subs: make(map[*Viewer]bool),
-		buf:  newRingBuffer(ringBufferMaxBytes),
+		id:         id,
+		opts:       opts,
+		cmd:        cmd,
+		in:         bufio.NewWriter(stdin),
+		subs:       make(map[*Viewer]bool),
+		buf:        newRingBuffer(ringBufferMaxBytes),
+		exited:     make(chan struct{}),
+		stderrDone: make(chan struct{}),
 	}
 
 	// Was previously left nil (cmd.Stderr) and silently discarded -- a crash
@@ -146,6 +164,7 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	// process can run for the agent's whole lifetime, so an in-memory buffer
 	// would grow unbounded.
 	go func() {
+		defer close(a.stderrDone) // readLoop waits on this before cmd.Wait()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			log.Printf("[agent %s stderr] %s", id, scanner.Text())
@@ -190,6 +209,25 @@ func (a *Agent) readLoop(stdout io.Reader) {
 	} else {
 		log.Printf("[agent %s] read loop ended (EOF)", a.id)
 	}
+	// REAP the process. Without this the exit status is never collected: on
+	// POSIX that leaves a zombie, on Windows it leaks the process handle, and
+	// either way it accumulates across every restart in a long-lived daemon.
+	//
+	// Order matters and is why stderrDone exists. cmd.Wait() closes the pipes,
+	// and os/exec documents that calling it before all pipe reads have finished
+	// is a race -- stdout is drained (the scanner loop above just ended) and
+	// this waits for stderr before reaping.
+	<-a.stderrDone
+	if werr := a.cmd.Wait(); werr != nil && !a.dying.Load() {
+		// A non-zero exit is expected when WE killed it; only surface it when
+		// the process died on its own.
+		log.Printf("[agent %s] exited: %s", a.id, werr)
+	}
+	// Publish "confirmed dead" only after the reap, so anything waiting on
+	// exited (Kill) is guaranteed the process is really gone and its id is
+	// safe to reuse.
+	close(a.exited)
+
 	a.broadcast(NormalizedEvent{AgentID: a.id, Type: "removed", Detail: "process exited"})
 	a.clearTyping() // safety net: a crash mid-turn may never emit "result" at all
 	if a.onExit != nil {
@@ -404,11 +442,38 @@ func (a *Agent) Unsubscribe(v *Viewer) {
 // its own. One code path owning that notification, not two -- duplicating
 // it here would just re-create the split-bookkeeping shape tonight's real
 // bug came from, in miniature.
+// agentKillTimeout bounds how long Kill waits for confirmed exit. Generous
+// enough that a process merely slow to die is not misreported, short enough
+// that a restart cannot hang the tray or an HTTP handler indefinitely.
+const agentKillTimeout = 10 * time.Second
+
+// Kill terminates the subprocess and WAITS for it to actually be gone.
+//
+// It previously returned as soon as the signal was delivered. RestartAll then
+// called Spawn for the same id immediately, so a replacement process could
+// start while its predecessor was still tearing down -- two live processes for
+// one agent id, with the old one's readLoop still wired to onMessage and so
+// still able to post to the board under that id. Returning on confirmed exit
+// is what makes "one agent id, one process" true of the OS and not just of the
+// registry map.
 func (a *Agent) Kill() error {
-	if a.cmd.Process == nil {
+	a.dying.Store(true) // Spawn refuses to reuse this id until the process is gone
+	// No process to wait on -- nothing can ever close exited, so returning here
+	// is the only correct answer. (a.cmd is always set by NewAgent; the nil
+	// check keeps this honest rather than half-defensive.)
+	if a.cmd == nil || a.cmd.Process == nil {
 		return nil
 	}
-	return a.cmd.Process.Kill()
+	killProcessTree(a.cmd.Process.Pid) // best-effort: the CLI's own children
+	_ = a.cmd.Process.Kill()
+	select {
+	case <-a.exited:
+		return nil
+	case <-time.After(agentKillTimeout):
+		// Report it rather than pretending: an unreaped process that LOOKS
+		// reaped is exactly the orphan that produces duplicate output.
+		return fmt.Errorf("agent %q did not exit within %s of being killed", a.id, agentKillTimeout)
+	}
 }
 
 // broadcast ALWAYS buffers, live viewers or not -- output while nobody's
