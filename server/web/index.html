@@ -524,27 +524,68 @@
       .then(function(j){ if(j && j.mode){ voiceMode=j.mode; } }).catch(function(){}); // sync the engine choice; browser voices are gated by voiceMode+mute now (decoupled)
   }
   function addAgent(){
-    // Native OS folder dialog first -- but a headless board (no interactive
-    // desktop, e.g. a background/service launch) makes that dialog hang forever,
-    // so race it against a timeout and fall back to a typed path. The button must
-    // never just sit there doing nothing.
-    var handled=false;
-    function typedFallback(){ if(handled) return; handled=true;
-      var f=prompt("Paste the project folder path for the new agent (its folder name becomes the agent name):");
-      if(f) doAdd(f.trim()); }
-    var ctrl = window.AbortController ? new AbortController() : null;
-    var timer = setTimeout(function(){ if(ctrl) ctrl.abort(); typedFallback(); }, 8000);
-    fetch("/control/pick",{method:"POST",headers:headers(), signal: ctrl?ctrl.signal:undefined})
-      .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
-      .then(function(res){
-        clearTimeout(timer);
-        if(handled) return;
-        if(res.s===401){ handled=true; askToken(); return; }
-        if(res.s===200 && res.j.folder){ handled=true; doAdd(res.j.folder); return; }
-        if(res.j && res.j.error==="cancelled"){ handled=true; return; }
-        typedFallback(); // picker returned but gave no folder (e.g. headless) -> typed path
-      })
-      .catch(function(){ clearTimeout(timer); typedFallback(); });
+    // A proper in-browser dialog, shown INSTANTLY -- no native-picker hang. A text
+    // field is the reliable cross-platform way to get an absolute folder path (a
+    // browser can't hand one over from a file input), and the Browse button uses
+    // the OS picker when a desktop is available WITHOUT ever blocking the dialog.
+    if(document.getElementById("addagent-modal")) return;
+    var bd=document.createElement("div"); bd.className="modal-backdrop"; bd.id="addagent-modal";
+    var m=document.createElement("div"); m.className="modal"; m.style.maxWidth="480px";
+    var head=document.createElement("div"); head.className="modal-head";
+    var h2=document.createElement("h2"); h2.textContent="Add agent"; head.appendChild(h2);
+    var xb=document.createElement("button"); xb.className="x"; xb.textContent="×"; xb.title="Close"; head.appendChild(xb);
+    m.appendChild(head);
+    var body=document.createElement("div"); body.className="modal-body";
+    var lab=document.createElement("div"); lab.className="set-note"; lab.style.marginBottom="8px";
+    lab.textContent="Project folder for the new agent — its folder name becomes the agent's name, and the agent runs from there.";
+    body.appendChild(lab);
+    var rowdiv=document.createElement("div"); rowdiv.style.display="flex"; rowdiv.style.gap="8px"; rowdiv.style.alignItems="center";
+    var inp=document.createElement("input"); inp.type="text"; inp.placeholder="C:\\repos\\my-project"; inp.style.flex="1";
+    var browse=document.createElement("button"); browse.type="button"; browse.className="ctl"; browse.textContent="Browse…"; browse.title="Open the native folder picker (needs a desktop session)";
+    rowdiv.appendChild(inp); rowdiv.appendChild(browse); body.appendChild(rowdiv);
+    var err=document.createElement("div"); err.className="set-note"; err.style.color="#c0392b"; err.style.marginTop="8px"; err.style.display="none";
+    body.appendChild(err);
+    var foot=document.createElement("div"); foot.style.display="flex"; foot.style.gap="8px"; foot.style.justifyContent="flex-end"; foot.style.marginTop="16px";
+    var cancel=document.createElement("button"); cancel.type="button"; cancel.className="ctl"; cancel.textContent="Cancel";
+    var add=document.createElement("button"); add.type="button"; add.className="addbtn"; add.textContent="Add agent"; add.style.display="";
+    foot.appendChild(cancel); foot.appendChild(add); body.appendChild(foot);
+    m.appendChild(body); bd.appendChild(m); document.body.appendChild(bd);
+    requestAnimationFrame(function(){ bd.classList.add("show"); });
+    setTimeout(function(){ inp.focus(); }, 40);
+
+    function close(){ if(bd.parentNode) bd.parentNode.removeChild(bd); document.removeEventListener("keydown", onKey); }
+    function onKey(e){ if(e.key==="Escape") close(); }
+    document.addEventListener("keydown", onKey);
+    bd.addEventListener("click", function(e){ if(e.target===bd) close(); });
+    xb.addEventListener("click", close); cancel.addEventListener("click", close);
+
+    function submit(){
+      var f=(inp.value||"").trim();
+      if(!f){ err.textContent="Enter a folder path."; err.style.display=""; inp.focus(); return; }
+      add.disabled=true; add.textContent="Adding…"; err.style.display="none";
+      fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f})})
+        .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
+        .then(function(res){
+          if(res.s===401){ close(); askToken(); return; }
+          if(res.s>=400){ add.disabled=false; add.textContent="Add agent"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
+          close(); poll();
+        })
+        .catch(function(){ add.disabled=false; add.textContent="Add agent"; err.textContent="Couldn't reach the server."; err.style.display=""; });
+    }
+    add.addEventListener("click", submit);
+    inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); submit(); } });
+
+    // Optional native picker: fills the field if it returns a folder; if it hangs
+    // (headless) or is cancelled, the dialog is untouched and you just type.
+    browse.addEventListener("click", function(){
+      browse.disabled=true; browse.textContent="Opening…";
+      var ctrl=window.AbortController?new AbortController():null;
+      var t=setTimeout(function(){ if(ctrl) ctrl.abort(); }, 8000);
+      fetch("/control/pick",{method:"POST",headers:headers(),signal:ctrl?ctrl.signal:undefined})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ clearTimeout(t); browse.disabled=false; browse.textContent="Browse…"; if(j&&j.folder){ inp.value=j.folder; inp.focus(); } })
+        .catch(function(){ clearTimeout(t); browse.disabled=false; browse.textContent="Browse…"; err.textContent="Native dialog isn't available here (no desktop) — type or paste the path above."; err.style.display=""; });
+    });
   }
   function doAdd(folder){
     fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),
