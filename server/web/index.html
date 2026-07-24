@@ -36,6 +36,7 @@
   .cli-claude{background:#8b5cf6}
   .cli-gemini{background:#2563eb}
   .cli-qwen{background:#0e9f6e}
+  .voicesel{background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:7px; padding:4px 8px; font-size:12px; max-width:100%}
   .agent .ct{margin-left:auto;font-size:11px;color:var(--muted)}
   /* animated … next to a name while that agent is composing a reply (mid claude call) */
   .agent .nmwrap{flex:1;min-width:0;display:flex;align-items:center;gap:5px;overflow:hidden}
@@ -330,6 +331,8 @@
   function voiceFor(name){
     if(!voices.length) loadVoices();
     if(!voices.length) return null;
+    var ov=getVoiceOverride(name); // an explicit per-agent pick from the Add/Edit dialog wins
+    if(ov){ for(var k=0;k<voices.length;k++){ if(voices[k].name===ov) return voices[k]; } }
     var prefs=VOICE_MAP[(name||"").toLowerCase()];
     if(prefs){
       for(var p=0;p<prefs.length;p++){
@@ -475,25 +478,22 @@
 
   function renderAgents(){
     // The sidebar renders the CONFIGURED ROSTER (data/roster.json via /roster), not "who posted".
-    // Every agent is equal: same row, a remove (x) for all, no forced lead-star.
+    // Every agent is equal: same row; double-click a name to open its Edit dialog (folder, CLI, voice, remove).
     agents.innerHTML="";
     rosterList.forEach(function(a){
       var name=a.id;
       var row=document.createElement("div"); row.className="agent"; row.title=a.role||"";
       row.appendChild(av(name));
       var nm=document.createElement("span"); nm.className="nm"; nm.textContent=a.name||name;
+      nm.style.cursor="pointer"; nm.title="Double-click to edit "+(a.name||name);
+      nm.addEventListener("dblclick", function(){ agentDialog("edit", a); });
       var clin=(a.cli||"claude");
       var cli=document.createElement("span"); cli.className="clibadge cli-"+clin; cli.textContent=clin; cli.title="launched via the "+clin+" CLI";
       var dots=document.createElement("span"); dots.className="dots"+(typingSet[name]?" on":""); dots.innerHTML="<i>&#8226;</i><i>&#8226;</i><i>&#8226;</i>"; dots.title="working on a reply";
       var spk=document.createElement("span"); spk.className="spk"+(speakingSet[name]?" on":""); spk.textContent="🔊"; spk.title="speaking now";
       var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(dots); nmwrap.appendChild(spk);
       row.appendChild(nmwrap);
-      row.appendChild(cli); // its OWN fixed-width column after the flexible name block, so every badge aligns down the list like the × button
-      if(controlOn){
-        var x=document.createElement("button"); x.className="kick"; x.textContent="×"; x.title="Remove "+name;
-        x.addEventListener("click", function(){ kickAgent(name); });
-        row.appendChild(x);
-      }
+      row.appendChild(cli); // its OWN fixed-width column after the flexible name block
       agents.appendChild(row);
     });
   }
@@ -527,34 +527,53 @@
     fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
       .then(function(j){ if(j && j.mode){ voiceMode=j.mode; } }).catch(function(){}); // sync the engine choice; browser voices are gated by voiceMode+mute now (decoupled)
   }
-  function addAgent(){
-    // A real folder browser driven by the daemon's /control/browse. Works whether
-    // the board is on a desktop or headless -- no native OS dialog, no PowerShell:
-    // you click folders here and the SERVER returns real absolute paths (which a
-    // browser's own folder input can't). You can also type/paste a path (Enter to
-    // open it), and "Add agent here" uses whatever folder you're currently in.
+  function addAgent(){ agentDialog("add", null); }        // the + button
+  // getVoiceOverride/setVoiceOverride: a per-agent BROWSER voice, persisted in
+  // localStorage (fleetchat_voices) so a pick survives reloads. voiceFor() reads
+  // it first. "" = Auto (the stable name-hash pick).
+  function loadVoiceOverrides(){ try{ return JSON.parse(localStorage.getItem("fleetchat_voices")||"{}")||{}; }catch(e){ return {}; } }
+  function getVoiceOverride(id){ return loadVoiceOverrides()[(id||"").toLowerCase()]||""; }
+  function setVoiceOverride(id, voiceName){ var m=loadVoiceOverrides(); id=(id||"").toLowerCase();
+    if(voiceName) m[id]=voiceName; else delete m[id];
+    try{ localStorage.setItem("fleetchat_voices", JSON.stringify(m)); }catch(e){} }
+
+  // agentDialog: the shared "agent config" component behind BOTH + Add (create) and
+  // double-clicking a name (edit). One layout, two modes: folder (browser vs
+  // read-only) + CLI picker + voice picker, and in edit a Remove. agent = the
+  // roster entry {id,name,cli,dir} in edit mode, null in add.
+  function agentDialog(mode, agent){
     if(document.getElementById("addagent-modal")) return;
+    var editing = mode==="edit", aid = editing ? agent.id : "";
     var bd=document.createElement("div"); bd.className="modal-backdrop"; bd.id="addagent-modal";
     var m=document.createElement("div"); m.className="modal"; m.style.maxWidth="540px";
     var head=document.createElement("div"); head.className="modal-head";
-    var h2=document.createElement("h2"); h2.textContent="Add agent — pick a folder"; head.appendChild(h2);
+    var h2=document.createElement("h2"); h2.textContent = editing ? ("Edit "+(agent.name||agent.id)) : "Add agent — pick a folder"; head.appendChild(h2);
     var xb=document.createElement("button"); xb.className="x"; xb.textContent="×"; xb.title="Close"; head.appendChild(xb);
     m.appendChild(head);
     var body=document.createElement("div"); body.className="modal-body";
-    var lab=document.createElement("div"); lab.className="set-note"; lab.style.marginBottom="8px";
-    lab.textContent="The agent runs from this folder and takes its name. Click a folder to open it, or type/paste a path and press Enter.";
-    body.appendChild(lab);
-    var rowdiv=document.createElement("div"); rowdiv.style.display="flex"; rowdiv.style.gap="8px"; rowdiv.style.alignItems="center";
-    var inp=document.createElement("input"); inp.type="text"; inp.placeholder="C:\\repos\\my-project"; inp.style.flex="1";
-    var up=document.createElement("button"); up.type="button"; up.className="ctl"; up.textContent="⬆ Up"; up.title="Go to the parent folder";
-    rowdiv.appendChild(inp); rowdiv.appendChild(up); body.appendChild(rowdiv);
-    var list=document.createElement("div"); list.className="folderlist"; body.appendChild(list);
-    var err=document.createElement("div"); err.className="set-note"; err.style.color="#c0392b"; err.style.marginTop="8px"; err.style.display="none";
-    body.appendChild(err);
-    // CLI picker -- which backend this agent runs. An agent is {folder, cli}.
+
+    // --- Folder: a browser in Add; read-only display in Edit (re-home = remove + re-add) ---
+    var inp, up, list, curPath="", parentPath="";
+    if(editing){
+      var flab=document.createElement("div"); flab.className="set-note"; flab.style.marginBottom="6px"; flab.textContent="Runs from:"; body.appendChild(flab);
+      var fval=document.createElement("div"); fval.style.cssText="font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;word-break:break-all";
+      fval.textContent = agent.dir || "(no home folder — runs from the daemon's folder)"; body.appendChild(fval);
+    } else {
+      var lab=document.createElement("div"); lab.className="set-note"; lab.style.marginBottom="8px";
+      lab.textContent="The agent runs from this folder and takes its name. Click a folder to open it, or type/paste a path and press Enter.";
+      body.appendChild(lab);
+      var rowdiv=document.createElement("div"); rowdiv.style.display="flex"; rowdiv.style.gap="8px"; rowdiv.style.alignItems="center";
+      inp=document.createElement("input"); inp.type="text"; inp.placeholder="C:\\repos\\my-project"; inp.style.flex="1";
+      up=document.createElement("button"); up.type="button"; up.className="ctl"; up.textContent="⬆ Up"; up.title="Go to the parent folder";
+      rowdiv.appendChild(inp); rowdiv.appendChild(up); body.appendChild(rowdiv);
+      list=document.createElement("div"); list.className="folderlist"; body.appendChild(list);
+    }
+    var err=document.createElement("div"); err.className="set-note"; err.style.color="#c0392b"; err.style.marginTop="8px"; err.style.display="none"; body.appendChild(err);
+
+    // --- CLI picker (pre-selected in Edit) ---
     var clis=[{id:"claude",label:"Claude"},{id:"gemini",label:"Gemini"},{id:"qwen",label:"Qwen"}];
-    var selectedCli="claude", clibtns={};
-    var clirow=document.createElement("div"); clirow.style.display="flex"; clirow.style.gap="8px"; clirow.style.alignItems="center"; clirow.style.marginTop="14px";
+    var selectedCli = (editing && agent.cli) ? agent.cli : "claude", clibtns={};
+    var clirow=document.createElement("div"); clirow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
     var cll=document.createElement("span"); cll.className="set-note"; cll.textContent="Run with:"; clirow.appendChild(cll);
     clis.forEach(function(c){
       var b=document.createElement("button"); b.type="button"; b.className="clipick cli-"+c.id+(c.id===selectedCli?" on":""); b.textContent=c.label;
@@ -562,23 +581,43 @@
       clibtns[c.id]=b; clirow.appendChild(b);
     });
     body.appendChild(clirow);
-    var clinote=document.createElement("div"); clinote.className="set-note"; clinote.style.marginTop="6px"; clinote.style.fontSize="11px";
+    var clinote=document.createElement("div"); clinote.className="set-note"; clinote.style.cssText="margin-top:6px;font-size:11px";
     clinote.textContent="Claude is wired up today; Gemini and Qwen are selectable but their adapters aren't finished yet.";
     body.appendChild(clinote);
-    var foot=document.createElement("div"); foot.style.display="flex"; foot.style.gap="8px"; foot.style.justifyContent="flex-end"; foot.style.marginTop="16px";
+
+    // --- Voice picker (browser voices; per-agent override persisted client-side) ---
+    var vrow=document.createElement("div"); vrow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
+    var vlab=document.createElement("span"); vlab.className="set-note"; vlab.textContent="Voice:"; vrow.appendChild(vlab);
+    var vsel=document.createElement("select"); vsel.className="voicesel"; vsel.style.cssText="flex:1;min-width:0"; vrow.appendChild(vsel);
+    body.appendChild(vrow);
+    if(!voices.length) loadVoices();
+    (function fillVoices(){
+      var o0=document.createElement("option"); o0.value=""; o0.textContent="Auto (assigned by name)"; vsel.appendChild(o0);
+      (voices||[]).forEach(function(v){ var o=document.createElement("option"); o.value=v.name; o.textContent=v.name+" — "+v.lang; vsel.appendChild(o); });
+      vsel.value = editing ? getVoiceOverride(aid) : "";
+    })();
+
+    // --- Footer: Remove (edit only) on the left, Cancel + primary on the right ---
+    var foot=document.createElement("div"); foot.style.cssText="display:flex;gap:8px;align-items:center;margin-top:18px";
+    if(editing){
+      var rm=document.createElement("button"); rm.type="button"; rm.className="ctl"; rm.textContent="Remove agent"; rm.style.color="#c0392b";
+      rm.addEventListener("click", function(){ if(!confirm("Remove "+aid+" from the crew?")) return; close(); kickAgent(aid); });
+      foot.appendChild(rm);
+    }
+    var footR=document.createElement("div"); footR.style.cssText="margin-left:auto;display:flex;gap:8px";
     var cancel=document.createElement("button"); cancel.type="button"; cancel.className="ctl"; cancel.textContent="Cancel";
-    var add=document.createElement("button"); add.type="button"; add.className="addbtn"; add.textContent="Add agent here"; add.style.display="";
-    foot.appendChild(cancel); foot.appendChild(add); body.appendChild(foot);
+    var primary=document.createElement("button"); primary.type="button"; primary.className="addbtn"; primary.textContent = editing ? "Save changes" : "Add agent here";
+    footR.appendChild(cancel); footR.appendChild(primary); foot.appendChild(footR); body.appendChild(foot);
     m.appendChild(body); bd.appendChild(m); document.body.appendChild(bd);
     requestAnimationFrame(function(){ bd.classList.add("show"); });
 
-    var curPath="", parentPath="";
     function close(){ if(bd.parentNode) bd.parentNode.removeChild(bd); document.removeEventListener("keydown", onKey); }
     function onKey(e){ if(e.key==="Escape") close(); }
     document.addEventListener("keydown", onKey);
     bd.addEventListener("click", function(e){ if(e.target===bd) close(); });
     xb.addEventListener("click", close); cancel.addEventListener("click", close);
 
+    // --- folder browser (Add mode only) ---
     function joinPath(base,name){ if(!base) return name; return base.replace(/[\\/]+$/,"")+"\\"+name; }
     function browseTo(path){
       err.style.display="none";
@@ -604,25 +643,45 @@
         })
         .catch(function(){ list.innerHTML=""; err.textContent="Couldn't reach the server."; err.style.display=""; });
     }
-    up.addEventListener("click", function(){ if(parentPath) browseTo(parentPath); });
-    inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); browseTo(inp.value.trim()); } });
-
-    function submit(){
-      var f=(inp.value||"").trim();
-      if(!f){ err.textContent="Pick or type a folder first."; err.style.display=""; return; }
-      add.disabled=true; add.textContent="Adding…"; err.style.display="none";
-      fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli})})
-        .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
-        .then(function(res){
-          if(res.s===401){ close(); askToken(); return; }
-          if(res.s>=400){ add.disabled=false; add.textContent="Add agent here"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
-          close(); poll();
-        })
-        .catch(function(){ add.disabled=false; add.textContent="Add agent here"; err.textContent="Couldn't reach the server."; err.style.display=""; });
+    if(!editing){
+      up.addEventListener("click", function(){ if(parentPath) browseTo(parentPath); });
+      inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); browseTo(inp.value.trim()); } });
     }
-    add.addEventListener("click", submit);
 
-    browseTo(""); // start at the server's default (the user's home dir)
+    // --- primary action ---
+    function doSubmit(){
+      var voice = vsel.value; // "" = Auto
+      if(editing){
+        setVoiceOverride(aid, voice); // client-side, instant
+        if(selectedCli !== (agent.cli||"claude")){
+          primary.disabled=true; primary.textContent="Relaunching…"; err.style.display="none";
+          fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, cli:selectedCli})})
+            .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
+            .then(function(res){
+              if(res.s===401){ close(); askToken(); return; }
+              if(res.s>=400){ primary.disabled=false; primary.textContent="Save changes"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
+              close(); poll();
+            })
+            .catch(function(){ primary.disabled=false; primary.textContent="Save changes"; err.textContent="Couldn't reach the server."; err.style.display=""; });
+        } else { close(); poll(); } // voice-only change: nothing to relaunch
+      } else {
+        var f=(inp.value||"").trim();
+        if(!f){ err.textContent="Pick or type a folder first."; err.style.display=""; return; }
+        primary.disabled=true; primary.textContent="Adding…"; err.style.display="none";
+        fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli})})
+          .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
+          .then(function(res){
+            if(res.s===401){ close(); askToken(); return; }
+            if(res.s>=400){ primary.disabled=false; primary.textContent="Add agent here"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
+            if(voice && res.j && res.j.added) setVoiceOverride(res.j.added, voice);
+            close(); poll();
+          })
+          .catch(function(){ primary.disabled=false; primary.textContent="Add agent here"; err.textContent="Couldn't reach the server."; err.style.display=""; });
+      }
+    }
+    primary.addEventListener("click", doSubmit);
+
+    if(!editing) browseTo(""); // start at the server's default (the user's home dir)
   }
   function doAdd(folder){
     fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),

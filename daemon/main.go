@@ -130,6 +130,7 @@ func main() {
 			Name string `json:"name"`
 			Role string `json:"role"`
 			CLI  string `json:"cli"`
+			Dir  string `json:"dir"` // the agent's home folder (its cwd), for the Edit dialog to show
 		}
 		out := make([]rosterEntry, 0)
 		for _, a := range reg.All() {
@@ -137,7 +138,7 @@ func main() {
 			if cli == "" {
 				cli = "claude" // the default backend when a persona doesn't set one
 			}
-			out = append(out, rosterEntry{ID: a.id, Name: a.persona.Name, Role: a.persona.Role, CLI: cli})
+			out = append(out, rosterEntry{ID: a.id, Name: a.persona.Name, Role: a.persona.Role, CLI: cli, Dir: a.opts.Folder})
 		}
 		// reg.All() walks a Go map -- deliberately randomized iteration order by
 		// language design -- so without this sort the sidebar reshuffles on every
@@ -452,6 +453,7 @@ func main() {
 	mux.HandleFunc("/control/respawn", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Agent string `json:"agent"`
+			CLI   string `json:"cli"` // optional: relaunch this agent on a different backend (Edit dialog)
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -462,6 +464,9 @@ func main() {
 			return
 		}
 		id, opts, persona := a.id, a.opts, a.persona
+		if body.CLI != "" {
+			opts.CLI = body.CLI // change which CLI this agent runs; the respawn below applies it
+		}
 		reg.Kill(id)
 		na, err := reg.Spawn(id, opts, persona)
 		if err != nil {
