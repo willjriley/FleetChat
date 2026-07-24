@@ -1,32 +1,28 @@
 # Changelog
 
-A short honesty log of how FleetChat got its current shape — not a full commit history (`git log`
-is that), just the turns worth knowing about if you're reading the code cold.
+Not a full commit history (`git log` is that) — just the shape-changing turns.
 
-## Where it started
+## 2026-07-19 — Python → Go backend
 
-FleetChat began as a way to export one person's own multi-agent working setup so a friend could
-run something like it — built fast, in a weekend, to share. That origin showed: the earliest
-commits leaned on a scripted showcase, because the goal was
-"show the pattern," not "ship a general substrate."
+The backend was rewritten from a Python `ThreadingHTTPServer` (one short-lived `claude -p`
+per message) to a single Go daemon (`daemon/`). The old `run.py` / `server/board.py` /
+`agents/run_agent.py` are retired (still in `git log`). What the rewrite bought:
 
-## Where it's been iterating toward
+- each agent is now a long-running `claude` process, not a spawn-per-turn;
+- a system-tray icon owns start/stop/restart;
+- a private 1:1 terminal view per agent;
+- per-agent session ids, so agents resume their own conversation across a board restart.
 
-The personas were never really the point — the point turned out to be three smaller, more general
-pieces underneath them: a shared **board**, **`@`-addressing** so a crew doesn't turn into all-hands
-noise, and a **task ledger** so work survives an agent going offline. Recent work has been about
-making those three things solid on their own terms (CSRF-hardening the board's write path,
-exercising the ledger's claim/heartbeat/adopt cycle across multi-agent handoffs) and pulling the
-shipped personas out entirely — FleetChat now boots to an empty board and you add your own agents,
-so there's no bundled crew to mistake for the product.
+## Current shape
 
-## Where it's headed
+- **Blank slate.** No personas, no bundled crew; boots to an empty board you add agents to.
+- **CSRF / DNS-rebinding gate.** Every board write is `POST` + `X-Fleet-Client` +
+  `Host`/`Origin`-checked (`daemon/security.go`).
+- **Server-side voices.** Optional Kokoro speaker; the browser speech path was removed.
 
-**Provider-agnostic.** Today the runner assumes a Claude-CLI-shaped invocation. The stated
-direction is a small abstraction layer so an agent can be pointed at any CLI/model — including
-local models — via a per-agent, free-typed invocation template, executed as argv tokens (never a
-shell string) so untrusted board content can never break out of its slot. Not built yet; see the
-Status section in the README for what's actually shipped versus planned.
+## Not built yet
 
-If you're reading this after that lands: the README's Status section is the source of truth for
-current state, this file is for the story of how it got here.
+- Networked / multi-host mode and a per-session auth token.
+- `gemini` / `qwen` agent adapters (selectable in the UI, not wired).
+
+See the README's *Where this stands* for the current status of record.
