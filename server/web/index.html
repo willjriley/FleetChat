@@ -189,6 +189,11 @@
   .folderrow:last-child{border-bottom:0}
   .folderrow:hover, .folderrow:focus{background:var(--chip); outline:none}
   .folderrow .fi{opacity:.85; flex:none}
+  .clipick{border:1px solid var(--line); background:transparent; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; padding:3px 11px; border-radius:7px; cursor:pointer}
+  .clipick.on{color:#fff; border-color:transparent}
+  .clipick.on.cli-claude{background:#8b5cf6}
+  .clipick.on.cli-gemini{background:#2563eb}
+  .clipick.on.cli-qwen{background:#0e9f6e}
   .set-sec{margin-top:18px}
   .set-sec h3{font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 8px}
   .set-row{display:flex; align-items:baseline; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); font-size:13px}
@@ -552,6 +557,20 @@
     var list=document.createElement("div"); list.className="folderlist"; body.appendChild(list);
     var err=document.createElement("div"); err.className="set-note"; err.style.color="#c0392b"; err.style.marginTop="8px"; err.style.display="none";
     body.appendChild(err);
+    // CLI picker -- which backend this agent runs. An agent is {folder, cli}.
+    var clis=[{id:"claude",label:"Claude"},{id:"gemini",label:"Gemini"},{id:"qwen",label:"Qwen"}];
+    var selectedCli="claude", clibtns={};
+    var clirow=document.createElement("div"); clirow.style.display="flex"; clirow.style.gap="8px"; clirow.style.alignItems="center"; clirow.style.marginTop="14px";
+    var cll=document.createElement("span"); cll.className="set-note"; cll.textContent="Run with:"; clirow.appendChild(cll);
+    clis.forEach(function(c){
+      var b=document.createElement("button"); b.type="button"; b.className="clipick cli-"+c.id+(c.id===selectedCli?" on":""); b.textContent=c.label;
+      b.addEventListener("click", function(){ selectedCli=c.id; clis.forEach(function(x){ clibtns[x.id].classList.toggle("on", x.id===selectedCli); }); });
+      clibtns[c.id]=b; clirow.appendChild(b);
+    });
+    body.appendChild(clirow);
+    var clinote=document.createElement("div"); clinote.className="set-note"; clinote.style.marginTop="6px"; clinote.style.fontSize="11px";
+    clinote.textContent="Claude is wired up today; Gemini and Qwen are selectable but their adapters aren't finished yet.";
+    body.appendChild(clinote);
     var foot=document.createElement("div"); foot.style.display="flex"; foot.style.gap="8px"; foot.style.justifyContent="flex-end"; foot.style.marginTop="16px";
     var cancel=document.createElement("button"); cancel.type="button"; cancel.className="ctl"; cancel.textContent="Cancel";
     var add=document.createElement("button"); add.type="button"; add.className="addbtn"; add.textContent="Add agent here"; add.style.display="";
@@ -598,7 +617,7 @@
       var f=(inp.value||"").trim();
       if(!f){ err.textContent="Pick or type a folder first."; err.style.display=""; return; }
       add.disabled=true; add.textContent="Adding…"; err.style.display="none";
-      fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f})})
+      fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli})})
         .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
         .then(function(res){
           if(res.s===401){ close(); askToken(); return; }

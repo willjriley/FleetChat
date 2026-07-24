@@ -305,6 +305,7 @@ func main() {
 	mux.HandleFunc("/control/add", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Folder string `json:"folder"`
+			CLI    string `json:"cli"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -331,7 +332,11 @@ func main() {
 			return
 		}
 		persona, personaText := loadPersona(repoRoot, name)
-		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, Persona: personaText, CLI: persona.CLI}, persona)
+		cli := persona.CLI
+		if body.CLI != "" {
+			cli = body.CLI // the operator's explicit pick in the Add-agent dialog wins over the persona default
+		}
+		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, Persona: personaText, CLI: cli}, persona)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
