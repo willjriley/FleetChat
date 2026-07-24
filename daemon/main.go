@@ -29,6 +29,16 @@ import (
 // service presence; there is no separate supervisor process.
 const daemonPort = "8137"
 
+// kokoroVoices: the fixed high-quality (Kokoro) voice ids the per-agent voice
+// picker offers. English set -- the useful ones. Speech is server-only now (the
+// browser Web-Speech path was removed), so these are THE voices.
+var kokoroVoices = []string{
+	"af_heart", "af_bella", "af_sky", "af_sarah", "af_nicole",
+	"am_adam", "am_michael", "am_echo", "am_onyx", "am_fenrir", "am_liam", "am_puck",
+	"bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+	"bm_george", "bm_daniel", "bm_lewis",
+}
+
 func main() {
 	// Resolve the repo root and install the log tee FIRST -- BEFORE
 	// killOtherInstances -- so the single-instance / restart-handoff logs (the very
@@ -600,6 +610,7 @@ func main() {
 			"assigned":        assigned,
 			"installed":       vm.Installed(),      // are the high-quality (Kokoro) weights present?
 			"speaker_running": vm.SpeakerRunning(), // is the daemon-managed speaker up?
+			"voices":          kokoroVoices,        // the pickable high-quality voice ids (server speech is the only speech)
 			"download":        map[string]string{"state": dlState, "log": dlLog, "error": dlErr},
 		})
 	})
@@ -732,6 +743,19 @@ func main() {
 	if err := bs.Start(); err != nil {
 		log.Fatalf("[daemon] initial board start failed: %s", err)
 	}
+
+	// Speech is server-side only (the browser voices were removed), so if the
+	// high-quality voices are installed, bring the speaker up automatically -- then
+	// agent voices just work, gated by the 🔊/🔇 mute button. Not installed = silent
+	// until the operator downloads them from Settings. Backgrounded so a slow Python
+	// start never delays the board.
+	go func() {
+		if vm.Installed() {
+			if err := vm.StartSpeaker(); err != nil {
+				log.Printf("[daemon] voices installed but speaker didn't start: %s", err)
+			}
+		}
+	}()
 
 	// Headless mode: no system tray at all. This exists because the tray is the
 	// SINGLE biggest source of this daemon dying unexpectedly -- it owns a hidden

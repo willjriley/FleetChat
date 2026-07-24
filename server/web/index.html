@@ -296,7 +296,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
-  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, rosterMap = {}, typingSet = {}, rosterList = [], speakingSet = {}, voiceMode = "auto";
+  var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, rosterMap = {}, typingSet = {}, rosterList = [], speakingSet = {};
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
 
@@ -306,83 +306,23 @@
   function when(ts){ return new Date(ts*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); }
   function headers(extra){ var h=Object.assign({}, extra||{}); h["X-Fleet-Client"]="1"; if(token) h["X-Fleet-Token"]=token; return h; }
 
-  // ---------- agent voices: the browser's own speech synthesis (zero dependency) ----------
+  // ---------- agent voices: SERVER-SIDE ONLY (high-quality Kokoro speaker) ----------
+  // The browser Web-Speech path was removed on purpose -- no low-quality browser
+  // voices. Speech comes exclusively from the optional high-quality speaker you
+  // install in ⚙ Settings → Voice. The 🔊/🔇 header button mutes/unmutes THAT
+  // server speaker (it polls /control/tts and stays silent while muted). Per-agent
+  // voice is a Kokoro voice id set via /control/voice; the "who's speaking" pulse
+  // is driven by the speaker's /control/tts heartbeat (see loadTyping), not here.
   var muted = localStorage.getItem("fleetchat_muted")==="1";
-  var speakReady = false, voices = [];
-  // ENGLISH-ONLY (fix): getVoices() returns EVERY installed system voice, including non-English
-  // ones (ru-RU, zh-CN, ...). voiceFor()'s hash fallback indexes this list directly, so any agent
-  // with no VOICE_MAP entry could deterministically land on e.g. a Russian voice and read English
-  // text with it. Filter to en-* here so both the preference match and the fallback can only ever
-  // pick an English voice. Falls back to the unfiltered list if the platform exposes no en-* voice.
-  function loadVoices(){
-    try{
-      var all=(window.speechSynthesis && speechSynthesis.getVoices())||[];
-      var en=all.filter(function(v){ return /^en\b|^en[-_]/i.test(v.lang||""); });
-      voices = en.length ? en : all;
-    }catch(e){}
-  }
-  if(window.speechSynthesis){ loadVoices(); try{ speechSynthesis.onvoiceschanged=loadVoices; }catch(e){} }
-  // OPTIONAL, EXAMPLE per-agent voice assignment. Each name maps to an ordered list of preferred
-  // browser voices (case-insensitive substring match against installed voices); the first present
-  // one wins, else a stable name-hash pick, so it always works. These are BROWSER voices (Web Speech
-  // API) -- a self-contained fallback. If you run a server-side TTS speaker instead, the page detects
-  // it (see loadTtsState) and the browser voices stand down automatically. Edit for your own agents.
-  var VOICE_MAP = {}; // pin an agent's browser voice with "agent-id": ["voice-name-hint", ...]; unset = a stable name-hash pick
-  function voiceFor(name){
-    if(!voices.length) loadVoices();
-    if(!voices.length) return null;
-    var ov=getVoiceOverride(name); // an explicit per-agent pick from the Add/Edit dialog wins
-    if(ov){ for(var k=0;k<voices.length;k++){ if(voices[k].name===ov) return voices[k]; } }
-    var prefs=VOICE_MAP[(name||"").toLowerCase()];
-    if(prefs){
-      for(var p=0;p<prefs.length;p++){
-        for(var i=0;i<voices.length;i++){
-          if((voices[i].name||"").toLowerCase().indexOf(prefs[p])>=0) return voices[i];
-        }
-      }
-    }
-    var h=0; for(var j=0;j<name.length;j++) h=(h*31+name.charCodeAt(j))%voices.length;
-    return voices[h];
-  }
-  function cleanForSpeech(t){
-    return (t||"").replace(/```[\s\S]*?```/g," , code, ").replace(/`([^`]+)`/g,"$1")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g,"$1").replace(/https?:\/\/\S+/g," link ")
-      .replace(/[*#_>|]/g,"").replace(/\s+/g," ").trim().slice(0,400);
-  }
-  function speak(sender, text){
-    // "server-only" mode (Settings) is a HARD stop: this install always has the real engine, so
-    // the browser fallback goes permanently inert -- no heartbeat timing, no boot race, no theme
-    // desync, no process-supervision gap can ever matter, because this code path never runs at
-    // all. Silence during a genuine speaker outage is the trade; never a wrong voice.
-    // DECOUPLED (2026-07-20): browser voices are gated ONLY by mute + the explicit
-    // "High-quality" (server-only) mode -- NO auto-stand-down on server detection.
-    // The browser and high-quality paths never interfere; you pick one. Browser
-    // speaks by default; picking High-quality silences the browser and the Kokoro
-    // speaker takes over.
-    if(muted || voiceMode==="server-only" || !speakReady || !window.speechSynthesis) return;
-    var say=cleanForSpeech(text); if(!say) return;
-    var u=new SpeechSynthesisUtterance(say); var v=voiceFor(sender); if(v) u.voice=v; u.rate=1.05;
-    try{ speechSynthesis.speak(u); }catch(e){}
-  }
+  var voicesInstalled = false; // set by loadTtsState from /control/voices; gates the voice picker
+
   function setMuted(m){
     muted=m; localStorage.setItem("fleetchat_muted", m?"1":"0");
     var b=$("#mute"); if(b) b.textContent = m ? "🔇" : "🔊";
-    if(m && window.speechSynthesis){ try{ speechSynthesis.cancel(); }catch(e){} }
-    // also gate any server-side TTS speaker -> the mute button controls the real voices, not just the browser
     fetch("/control/tts",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({muted:m})}).catch(function(){});
   }
-  (function(){ var b=$("#mute"); if(!b) return; if(!window.speechSynthesis){ b.style.display="none"; return; } b.textContent = muted ? "🔇" : "🔊"; b.addEventListener("click", function(){ setMuted(!muted); }); })();
-
-  // Browsers stay silent until the first user gesture (anti-autoplay). Prime the speech
-  // engine on the first click/keypress so agent voices work the moment the user engages.
-  (function(){
-    if(!window.speechSynthesis) return;
-    function prime(){
-      document.removeEventListener("pointerdown", prime); document.removeEventListener("keydown", prime);
-      try{ var u=new SpeechSynthesisUtterance(" "); u.volume=0; speechSynthesis.speak(u); }catch(e){}
-    }
-    document.addEventListener("pointerdown", prime); document.addEventListener("keydown", prime);
-  })();
+  (function(){ var b=$("#mute"); if(!b) return; b.textContent = muted ? "🔇" : "🔊"; b.title="Server voices on/off";
+    b.addEventListener("click", function(){ setMuted(!muted); }); })();
 
   // ---------- safe rich rendering (escape FIRST, then formatting) ----------
   function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
@@ -523,19 +463,12 @@
       .catch(function(){});
   }
   function loadTtsState(){
-    // if a server-side speaker is live, the browser TTS stands down (no double up)
-    fetch("/control/tts",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
-      .then(function(j){ if(j && j.mode){ voiceMode=j.mode; } }).catch(function(){}); // sync the engine choice; browser voices are gated by voiceMode+mute now (decoupled)
+    // Track whether the high-quality voices are installed -- that gates the per-agent
+    // voice picker. Speech is server-only now; nothing browser-side to sync.
+    fetch("/control/voices",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; })
+      .then(function(j){ if(j){ voicesInstalled = !!j.installed; } }).catch(function(){});
   }
   function addAgent(){ agentDialog("add", null); }        // the + button
-  // getVoiceOverride/setVoiceOverride: a per-agent BROWSER voice, persisted in
-  // localStorage (fleetchat_voices) so a pick survives reloads. voiceFor() reads
-  // it first. "" = Auto (the stable name-hash pick).
-  function loadVoiceOverrides(){ try{ return JSON.parse(localStorage.getItem("fleetchat_voices")||"{}")||{}; }catch(e){ return {}; } }
-  function getVoiceOverride(id){ return loadVoiceOverrides()[(id||"").toLowerCase()]||""; }
-  function setVoiceOverride(id, voiceName){ var m=loadVoiceOverrides(); id=(id||"").toLowerCase();
-    if(voiceName) m[id]=voiceName; else delete m[id];
-    try{ localStorage.setItem("fleetchat_voices", JSON.stringify(m)); }catch(e){} }
 
   // agentDialog: the shared "agent config" component behind BOTH + Add (create) and
   // double-clicking a name (edit). One layout, two modes: folder (browser vs
@@ -585,17 +518,24 @@
     clinote.textContent="Claude is wired up today; Gemini and Qwen are selectable but their adapters aren't finished yet.";
     body.appendChild(clinote);
 
-    // --- Voice picker (browser voices; per-agent override persisted client-side) ---
+    // --- Voice picker: SERVER high-quality voices only (or an install prompt) ---
     var vrow=document.createElement("div"); vrow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
     var vlab=document.createElement("span"); vlab.className="set-note"; vlab.textContent="Voice:"; vrow.appendChild(vlab);
-    var vsel=document.createElement("select"); vsel.className="voicesel"; vsel.style.cssText="flex:1;min-width:0"; vrow.appendChild(vsel);
+    var vsel=document.createElement("select"); vsel.className="voicesel"; vsel.style.cssText="flex:1;min-width:0"; vsel.disabled=true; vrow.appendChild(vsel);
     body.appendChild(vrow);
-    if(!voices.length) loadVoices();
-    (function fillVoices(){
+    var vnote=document.createElement("div"); vnote.className="set-note"; vnote.style.cssText="margin-top:6px;font-size:11px"; body.appendChild(vnote);
+    fetch("/control/voices",{headers:headers()}).then(function(r){ return r.status===200?r.json():null; }).then(function(j){
+      if(!j || !j.installed){
+        vrow.style.display="none";
+        vnote.innerHTML="🔈 High-quality voices aren't installed — open <b>⚙ Settings → Voice</b> and Download to enable per-agent voices.";
+        return;
+      }
       var o0=document.createElement("option"); o0.value=""; o0.textContent="Auto (assigned by name)"; vsel.appendChild(o0);
-      (voices||[]).forEach(function(v){ var o=document.createElement("option"); o.value=v.name; o.textContent=v.name+" — "+v.lang; vsel.appendChild(o); });
-      vsel.value = editing ? getVoiceOverride(aid) : "";
-    })();
+      (j.voices||[]).forEach(function(v){ var o=document.createElement("option"); o.value=v; o.textContent=v; vsel.appendChild(o); });
+      vsel.value = editing ? ((j.assigned||{})[aid]||"") : "";
+      vsel.disabled=false;
+      vnote.textContent="Speaks through the high-quality server speaker.";
+    }).catch(function(){ vrow.style.display="none"; vnote.textContent="(couldn't load the voice list)"; });
 
     // --- Footer: Remove (edit only) on the left, Cancel + primary on the right ---
     var foot=document.createElement("div"); foot.style.cssText="display:flex;gap:8px;align-items:center;margin-top:18px";
@@ -652,7 +592,7 @@
     function doSubmit(){
       var voice = vsel.value; // "" = Auto
       if(editing){
-        setVoiceOverride(aid, voice); // client-side, instant
+        fetch("/control/voice",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, voice:voice||"off"})}).catch(function(){}); // set the server voice ("off" = Auto)
         if(selectedCli !== (agent.cli||"claude")){
           primary.disabled=true; primary.textContent="Relaunching…"; err.style.display="none";
           fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, cli:selectedCli})})
@@ -673,7 +613,7 @@
           .then(function(res){
             if(res.s===401){ close(); askToken(); return; }
             if(res.s>=400){ primary.disabled=false; primary.textContent="Add agent here"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
-            if(voice && res.j && res.j.added) setVoiceOverride(res.j.added, voice);
+            if(voice && res.j && res.j.added) fetch("/control/voice",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:res.j.added, voice:voice})}).catch(function(){});
             close(); poll();
           })
           .catch(function(){ primary.disabled=false; primary.textContent="Add agent here"; err.textContent="Couldn't reach the server."; err.style.display=""; });
@@ -927,8 +867,8 @@
     localNote("<p>👥 Crew — <b>"+rosterList.length+"</b> agent"+(rosterList.length===1?"":"s")+":</p><table class=\"statustbl\">"+head+rows+"</table>");
   }
   function cmdSetVoice(agent, voice){
-    // SERVER-backed: writes data/voices.json, the map the optional server-side speaker reads. NOTE this
-    // is the SERVER speaker's voice map; the browser-fallback voices (VOICE_MAP above) are separate (follow-up).
+    // SERVER-backed: sets the agent's high-quality (Kokoro) voice, the map the server speaker reads.
+    // This is the only voice path -- browser Web-Speech voices were removed.
     fetch("/control/voice",{method:"POST",headers:headers({"Content-Type":"application/json"}),
       body:JSON.stringify({agent:agent, voice:voice})})
       .then(function(r){ if(r.status===401){ askToken(); return null; }
@@ -999,7 +939,7 @@
       m.tags.forEach(function(x){ if(x==="vote")return; var c=document.createElement("span"); c.className="tag"; c.textContent="#"+x; t.appendChild(c); }); body.appendChild(t); }
     el.appendChild(body);
     if(mentionsMe(m.text||"")) el.classList.add("tagged");   // a message that @-names you -> tint the row
-    if(agentNames[m.sender]) speak(m.sender, m.text);
+    // (speech is server-side only: the high-quality speaker reads the board itself; the browser never speaks)
     var nearBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 140;
     msgs.appendChild(el);
     if(nearBottom) msgs.scrollTop = msgs.scrollHeight;
@@ -1014,7 +954,7 @@
       var incoming=data.messages||[];
       incoming.forEach(function(m){ add(m); if(m.id>lastId) lastId=m.id; });
       if(incoming.length) renderAgents();   // rebuild only on change, so the typing … animation isn't reset every poll
-      updateAllPolls(); speakReady = true;
+      updateAllPolls();
     }).catch(function(){ dot.classList.remove("ok"); setConn(false); });
   }
 
@@ -1239,7 +1179,7 @@
   var pollTimer=setInterval(poll, 2000);
   var typeTimer=setInterval(loadTyping, 1200);
   var rosterTimer=setInterval(loadRoster, 4000);   // catch + Add agent / x edits to the lineup
-  var ttsTimer=setInterval(loadTtsState, 5000);    // browser TTS auto-stands-down when a server speaker is live
+  var ttsTimer=setInterval(loadTtsState, 5000);    // refresh whether the high-quality voices are installed
   var thTimer=setInterval(loadThreads, 4000);      // task cards refresh only while the panel is open
   poll(); loadTyping(); loadTtsState(); loadThreads();
 })();
@@ -1407,22 +1347,12 @@
       function post(path,obj){ return fetch(path,{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs()),body:JSON.stringify(obj||{})}).catch(function(){}); }
       voiceBox.appendChild(row("Voices", j.muted?"muted (🔊 header button)":"on"));
 
-      // Engine picker -- fully DECOUPLED: pick Browser (built-in) OR High-quality (Kokoro); they never
-      // interfere (no auto-fallback). On/off stays the 🔊 header button, independent of the engine.
-      var curMode = (j.mode||"auto")==="server-only" ? "hq" : "browser";
-      var mrow=el("div","set-row"); mrow.appendChild(el("span","k","Voice engine"));
-      if(controlEnabled){
-        var sel=el("select","voicemode-sel");
-        [["browser","Browser (built-in)"],["hq","High-quality (Kokoro)"]].forEach(function(o){
-          var op=el("option",null,o[1]); op.value=o[0]; if(curMode===o[0]) op.selected=true; sel.appendChild(op); });
-        sel.addEventListener("change", function(){ setEngine(sel.value); });
-        mrow.appendChild(sel);
-      } else { mrow.appendChild(el("span","v", curMode==="hq"?"high-quality":"browser")); }
-      voiceBox.appendChild(mrow);
-
-      // High-quality (Kokoro) install state + ONE-CLICK download + speaker status.
+      // High-quality (Kokoro) is the ONLY speech now -- the browser Web-Speech path
+      // was removed, so there is no engine choice. Install state + one-click download
+      // + speaker start/stop.
       var hqrow=el("div","set-row"); hqrow.appendChild(el("span","k","High-quality voices"));
       var hqval=el("span","v"); hqrow.appendChild(hqval); voiceBox.appendChild(hqrow);
+      voiceBox.appendChild(el("div","set-note","Speech is server-side only. Install these once, then give each agent a voice from its Edit dialog; the 🔊 header button mutes/unmutes them."));
       function renderHq(v){
         v=v||{}; hqval.innerHTML=""; var dl=v.download||{};
         if(dl.state==="downloading"){ hqval.textContent="downloading… "+(dl.log||""); return; }
@@ -1432,31 +1362,28 @@
             b.style.cssText="cursor:pointer;border:1px solid var(--line);background:var(--chip);color:var(--ink);border-radius:7px;padding:3px 9px;font-size:12px";
             b.addEventListener("click", function(){ b.disabled=true; b.textContent="starting…"; post("/control/voices/download").then(pollHq); });
             hqval.appendChild(b);
-          } else { hqval.textContent="not installed"; }
+          } else { hqval.textContent="not installed — no agent voices until installed"; }
           if(dl.error){ hqval.appendChild(el("div","set-note","last attempt failed: "+dl.error)); }
           return;
         }
-        hqval.textContent = "installed ✓" + (v.speaker_running ? " · speaker live" : "");
+        hqval.appendChild(document.createTextNode("installed ✓  "));
+        if(controlEnabled){
+          var sb=el("button",null, v.speaker_running ? "Stop speaker" : "Start speaker");
+          sb.style.cssText="cursor:pointer;border:1px solid var(--line);background:var(--chip);color:var(--ink);border-radius:7px;padding:3px 9px;font-size:12px";
+          sb.addEventListener("click", function(){ sb.disabled=true; post("/control/speaker",{action: v.speaker_running?"stop":"start"}).then(function(){ setTimeout(function(){ fetch("/control/voices",{headers:hdrs()}).then(function(r){return r.ok?r.json():null;}).then(function(nv){ if(nv) renderHq(nv); }); }, 500); }); });
+          hqval.appendChild(sb);
+        } else { hqval.appendChild(document.createTextNode(v.speaker_running?"· speaker live":"· speaker off")); }
       }
       function pollHq(){
         var iv=setInterval(function(){
           fetch("/control/voices",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(v){
             if(!v) return; renderHq(v);
             var st=(v.download||{}).state;
-            if(v.installed){ post("/control/speaker",{action:"start"}); }   // auto-start the speaker once ready
+            if(v.installed){ post("/control/speaker",{action:"start"}); }   // auto-start once ready
             if(st==="done"||st==="error"||v.installed){ clearInterval(iv); }
           }).catch(function(){}); }, 2000);
       }
       renderHq(vc);
-      function setEngine(m){
-        if(m==="browser"){ post("/control/tts",{mode:"browser"}); post("/control/speaker",{action:"stop"}); }
-        else { post("/control/tts",{mode:"server-only"});
-          fetch("/control/voices",{headers:hdrs()}).then(function(r){ return r.ok?r.json():null; }).then(function(v){
-            if(v&&v.installed){ post("/control/speaker",{action:"start"}); renderHq(v); }
-            else { post("/control/voices/download"); pollHq(); }   // download; speaker auto-starts when ready
-          }).catch(function(){});
-        }
-      }
     }).catch(function(){
       voiceBox.appendChild(row("Voices", ls(MUTE_KEY)==="1"?"muted":"on"));
     });
