@@ -18,6 +18,18 @@ type PersonaConfig struct {
 	ID    string `json:"id"`
 	Role  string `json:"role"`
 	Intro string `json:"intro"`
+	// Dir is the agent's HOME repo -- the folder its process runs from (cwd), so
+	// it works as a specialist inside its own project. Read from the same
+	// git-ignored personas.local/<id>/agent.json as the rest of the persona, so a
+	// real filesystem path never enters the committed repo. Empty = no home
+	// folder (the agent runs from the daemon's cwd). A roster entry's own dir
+	// (set via the UI folder-picker) takes precedence over this default.
+	Dir string `json:"dir,omitempty"`
+	// CLI is which backend launches this agent: "claude" (default) | "gemini" |
+	// "qwen". Per-agent and from the same git-ignored config, so the fleet can mix
+	// CLIs across folders -- Claude in one repo, Gemini in another. See
+	// buildCLICommand; only claude is fully wired today.
+	CLI string `json:"cli,omitempty"`
 }
 
 func personaBaseDirs(repoRoot string) []string {

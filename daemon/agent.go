@@ -106,15 +106,19 @@ type Agent struct {
 	taught bool
 }
 
-// AgentOptions is deliberately just two optional strings today, not a full
-// per-CLI config -- Model and Persona are both meaningful the same way for
-// any backend that shares Claude's flag shape. A real Gemini/Qwen adapter
-// would translate these into ITS OWN flags rather than assuming --model/
-// --system-prompt are universal.
+// AgentOptions carries a single agent's launch config. Model/Persona/Folder are
+// expressed in Claude's flag shape; CLI selects WHICH backend turns them into
+// its own flags (see buildCLICommand) -- a real Gemini/Qwen adapter emits its
+// own, not an assumption that --model/--system-prompt are universal.
 type AgentOptions struct {
-	Model   string // "" = whatever the claude CLI's own default is
-	Persona string // "" = claude's own default persona; replaces it wholesale, same as FleetChat's own claude_reply() pattern
-	Folder  string // "" = no project folder; matches run_agent.py's FLEETCHAT_AGENT_DIR / --add-dir
+	Model   string // "" = whatever the CLI's own default is
+	Persona string // "" = the CLI's own default persona; replaced wholesale
+	Folder  string // "" = no home folder; otherwise the agent's cwd (its own repo) + --add-dir
+	// CLI picks which backend launches this agent: "claude" (default when "") |
+	// "gemini" | "qwen". Per-agent, so the board can run different CLIs in
+	// different folders. Read from the git-ignored persona config. Only the claude
+	// profile is fully wired today; see buildCLICommand.
+	CLI string
 	// ResumeSession is this agent's OWN prior claude session id ("" = start
 	// fresh). Set from data/sessions.json on respawn, which is what makes an
 	// agent survive a board restart with its memory intact. Per-agent by
@@ -123,16 +127,50 @@ type AgentOptions struct {
 	ResumeSession string
 }
 
-// NewAgent starts the subprocess and builds the Agent, but deliberately does
-// NOT start readLoop -- the caller (Registry.Spawn) must finish setting
-// persona/onExit/onMessage/onTyping/onActivity and only THEN call Start(). Those fields
-// used to get set after `go a.readLoop(stdout)` had already been kicked off
-// here, which meant a real (if narrow -- subprocess launch latency almost
-// always hides it) data race: a fast-starting process could reach route()'s
-// first event and read onMessage/onTyping while Spawn was still in the
-// middle of assigning them, with neither side holding a.mu.
-func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
-	args := []string{
+// agentWorkDir resolves the cwd an agent should run in: its own project folder
+// when that folder exists on disk, else "" (which exec treats as "inherit the
+// daemon's cwd"). Validated + isolated so a bad or relative folder can't reach
+// cmd.Dir and make cmd.Start() fail outright -- a set-but-missing folder is
+// logged and the agent still spawns (from the daemon dir) rather than vanishing.
+func agentWorkDir(id, folder string) string {
+	if folder == "" {
+		return ""
+	}
+	if fi, err := os.Stat(folder); err == nil && fi.IsDir() {
+		return folder
+	}
+	log.Printf("[agent %s] configured folder %q is not a usable directory -- running from the daemon cwd instead", id, folder)
+	return ""
+}
+
+// buildCLICommand turns per-agent options into the (binary, args) for THAT
+// agent's chosen CLI -- the multi-CLI seam. Each agent's config picks its cli
+// ("claude" | "gemini" | "qwen"), so the board can run Claude in one repo,
+// Gemini in another, and Qwen in a third, each launched with its own command.
+//
+// Today only the claude profile is fully wired: its stream-json flags here AND
+// the rawClaudeLine output adapter that route() parses. gemini/qwen are
+// recognized backends whose arg + output-stream adapters are not built yet, so
+// selecting one fails LOUDLY rather than launching claude's flags at a different
+// binary (which would misbehave silently). Adding a backend is one more case
+// here plus its output adapter -- not a rewrite. "" defaults to claude.
+func buildCLICommand(opts AgentOptions) (bin string, args []string, err error) {
+	switch cli := strings.ToLower(strings.TrimSpace(opts.CLI)); cli {
+	case "", "claude":
+		bin, args = claudeCommand(opts)
+		return bin, args, nil
+	case "gemini", "qwen":
+		return "", nil, fmt.Errorf("cli %q is a recognized backend but its adapter (args + output stream) isn't wired yet -- only claude is implemented today", cli)
+	default:
+		return "", nil, fmt.Errorf("unknown cli %q (want one of: claude, gemini, qwen)", cli)
+	}
+}
+
+// claudeCommand builds the claude CLI invocation -- the one fully-wired profile.
+// Kept separate from buildCLICommand so each future backend is its own peer
+// function with its own flag vocabulary, not a pile of conditionals.
+func claudeCommand(opts AgentOptions) (bin string, args []string) {
+	args = []string{
 		"-p",
 		"--input-format=stream-json",
 		"--output-format=stream-json",
@@ -148,18 +186,35 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	if opts.Folder != "" {
 		args = append(args, "--add-dir", opts.Folder)
 	}
-	// Resume THIS agent's own prior conversation. Validated before use because
-	// it reaches the child as an argv element and the file it came from is
+	// Resume THIS agent's own prior conversation. Validated before use because it
+	// reaches the child as an argv element and the file it came from is
 	// hand-editable; an id that fails the shape check is dropped and the agent
 	// starts fresh rather than being passed through to the CLI.
 	if opts.ResumeSession != "" && validSessionID.MatchString(opts.ResumeSession) {
 		args = append(args, "--resume", opts.ResumeSession)
 	}
-	claudeBin := "claude"
+	bin = "claude"
 	if env := os.Getenv("FLEETCHAT_CLAUDE"); env != "" {
-		claudeBin = env // matches run_agent.py's own override -- a scheduled-task/service launch context may not have "claude" resolvable on PATH at all
+		bin = env // matches run_agent.py's override -- a service/scheduled-task launch may not have "claude" on PATH
 	}
-	cmd := exec.Command(claudeBin, args...)
+	return bin, args
+}
+
+// NewAgent starts the subprocess and builds the Agent, but deliberately does
+// NOT start readLoop -- the caller (Registry.Spawn) must finish setting
+// persona/onExit/onMessage/onTyping/onActivity and only THEN call Start(). Those fields
+// used to get set after `go a.readLoop(stdout)` had already been kicked off
+// here, which meant a real (if narrow -- subprocess launch latency almost
+// always hides it) data race: a fast-starting process could reach route()'s
+// first event and read onMessage/onTyping while Spawn was still in the
+// middle of assigning them, with neither side holding a.mu.
+func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
+	// Build the launch command for THIS agent's chosen CLI -- the multi-CLI seam.
+	bin, args, err := buildCLICommand(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd := exec.Command(bin, args...)
 	// Must happen BEFORE Start: SysProcAttr is read at fork time, so setting it
 	// afterwards is silently ignored. On POSIX this makes the child its own
 	// process-group leader, which is the whole precondition killProcessTree
@@ -168,6 +223,15 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	// survive as orphans. No-op on Windows, where taskkill /T walks the real
 	// parent/child links instead.
 	configureProcessGroup(cmd)
+	// THE BOARD'S CORE DESIGN: each agent is a specialist that runs FROM ITS OWN
+	// repo. Setting cmd.Dir is what makes that real -- the agent's cwd, its
+	// relative paths, and its per-project CLAUDE.md / .claude/settings.local.json
+	// all resolve inside its folder, not the daemon's dir. --add-dir (above) only
+	// grants tool ACCESS to the folder; without cmd.Dir every agent would still
+	// run from the daemon dir and share one cwd. Must be set before Start (cmd.Dir
+	// is read at fork time). Validated in agentWorkDir so a bad path can't fail
+	// the spawn.
+	cmd.Dir = agentWorkDir(id, opts.Folder)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdin pipe: %w", err)

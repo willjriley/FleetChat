@@ -195,8 +195,29 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 			live := a.sessionID
 			a.mu.Unlock()
 			if live == "" {
-				log.Printf("[agent %s] resume of session %s never initialised -- forgetting it; next start will be fresh", id, attemptedResume)
+				// The resume failed: the process exited before system/init. Usual
+				// cause is a stored session that no longer resolves -- it expired, or
+				// the agent's home folder changed so claude looks in a different
+				// project dir than where the session was saved (exactly what moving
+				// each agent into its own repo does the first time). Forget the dead
+				// id, then RESPAWN FRESH so a stale session self-heals instead of
+				// leaving the agent dead until a manual restart -- the failure mode
+				// that took the whole fleet down on the folder cutover.
 				forgetSession(r.repoRoot, id)
+				if a.dying.Load() {
+					// Deliberately killed mid-resume -- forget, but don't resurrect.
+					log.Printf("[agent %s] resume of session %s never initialised; agent was being killed -- forgotten, not respawned", id, attemptedResume)
+				} else {
+					log.Printf("[agent %s] resume of session %s never initialised -- forgotten; respawning fresh", id, attemptedResume)
+					fresh := a.opts
+					fresh.ResumeSession = "" // forgetSession already ran, so Spawn's own lookup also finds nothing: truly fresh, and fresh can't re-enter this branch (no loop)
+					persona := a.persona
+					go func() {
+						if _, err := r.Spawn(id, fresh, persona); err != nil {
+							log.Printf("[agent %s] fresh respawn after failed resume errored: %s", id, err)
+						}
+					}()
+				}
 			}
 		}
 	}

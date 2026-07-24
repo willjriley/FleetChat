@@ -751,13 +751,25 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 	}
 	for _, e := range entries {
 		persona, personaText := loadPersona(repoRoot, e.Name)
-		a, err := reg.Spawn(e.Name, AgentOptions{Persona: personaText, Folder: e.Dir}, persona)
+		// Where this agent runs FROM (its cwd). A roster entry's own dir (set via
+		// the UI folder-picker) wins; otherwise the persona's configured home repo
+		// (personas.local/<id>/agent.json "dir"). This is what lands a bootstrapped
+		// specialist inside its own repo instead of the daemon dir.
+		folder := e.Dir
+		if folder == "" {
+			folder = persona.Dir
+		}
+		a, err := reg.Spawn(e.Name, AgentOptions{Persona: personaText, Folder: folder, CLI: persona.CLI}, persona)
 		if err != nil {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue
 		}
 		announceJoin(board, a.id, persona)
-		log.Printf("[daemon] bootstrapped %q from the real roster", e.Name)
+		if folder != "" {
+			log.Printf("[daemon] bootstrapped %q from the real roster -- running in its own folder %q", e.Name, folder)
+		} else {
+			log.Printf("[daemon] bootstrapped %q from the real roster (no home folder -- daemon cwd)", e.Name)
+		}
 	}
 }
 

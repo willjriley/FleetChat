@@ -62,6 +62,27 @@ func TestFleetFileEnvOverrideWins(t *testing.T) {
 	}
 }
 
+// agentWorkDir is what lands each agent in its own repo (cwd): a real folder is
+// used, anything unusable falls back to "" (inherit the daemon cwd) so a bad
+// path can never fail the spawn.
+func TestAgentWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	if got := agentWorkDir("x", ""); got != "" {
+		t.Fatalf(`empty folder must inherit (""), got %q`, got)
+	}
+	if got := agentWorkDir("x", dir); got != dir {
+		t.Fatalf("an existing dir must be used, got %q", got)
+	}
+	if got := agentWorkDir("x", filepath.Join(dir, "nope")); got != "" {
+		t.Fatalf("a missing dir must fall back to inherit, got %q", got)
+	}
+	f := filepath.Join(dir, "afile")
+	writeFile(t, f, "x")
+	if got := agentWorkDir("x", f); got != "" {
+		t.Fatalf("a plain file (not a dir) must fall back to inherit, got %q", got)
+	}
+}
+
 // Seeding writes the real declared crew to data/roster.json when none exists --
 // the fix for "the real agents never load" on a fresh board.
 func TestSeedRosterFromFleet(t *testing.T) {
