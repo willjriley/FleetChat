@@ -32,7 +32,7 @@
   .agent{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px}
   .agent .av{width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:11px;font-weight:700}
   .agent .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .agent .clibadge{flex:none;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;padding:1px 5px;border-radius:6px;color:#fff;opacity:.9}
+  .agent .clibadge{flex:none;width:54px;box-sizing:border-box;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;padding:2px 0;border-radius:6px;color:#fff;opacity:.9}
   .cli-claude{background:#8b5cf6}
   .cli-gemini{background:#2563eb}
   .cli-qwen{background:#0e9f6e}
@@ -482,8 +482,9 @@
       var cli=document.createElement("span"); cli.className="clibadge cli-"+clin; cli.textContent=clin; cli.title="launched via the "+clin+" CLI";
       var dots=document.createElement("span"); dots.className="dots"+(typingSet[name]?" on":""); dots.innerHTML="<i>&#8226;</i><i>&#8226;</i><i>&#8226;</i>"; dots.title="working on a reply";
       var spk=document.createElement("span"); spk.className="spk"+(speakingSet[name]?" on":""); spk.textContent="🔊"; spk.title="speaking now";
-      var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(cli); nmwrap.appendChild(dots); nmwrap.appendChild(spk);
+      var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(dots); nmwrap.appendChild(spk);
       row.appendChild(nmwrap);
+      row.appendChild(cli); // its OWN fixed-width column after the flexible name block, so every badge aligns down the list like the × button
       if(controlOn){
         var x=document.createElement("button"); x.className="kick"; x.textContent="×"; x.title="Remove "+name;
         x.addEventListener("click", function(){ kickAgent(name); });
