@@ -23,6 +23,7 @@ func writeFile(t *testing.T, path, body string) {
 // a real crew.
 func TestFleetFilePrefersLocalOverDemo(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("FLEETCHAT_FLEET_FILE", "") // hermetic: ignore any ambient override
 	writeFile(t, filepath.Join(dir, "fleet.json"), `{"crew":["demo"]}`)
 	if got := fleetFile(dir); got != filepath.Join(dir, "fleet.json") {
 		t.Fatalf("with only fleet.json, want it resolved; got %q", got)
@@ -34,6 +35,30 @@ func TestFleetFilePrefersLocalOverDemo(t *testing.T) {
 	fc := readFleet(dir)
 	if fc == nil || len(fc.Crew) != 1 || fc.Crew[0] != "alice" {
 		t.Fatalf("readFleet should load the local crew, got %+v", fc)
+	}
+}
+
+// An explicit $FLEETCHAT_FLEET_FILE outranks the in-repo overlay, letting an
+// operator keep their real fleet fully outside the repo (the documented
+// contract + parity with personaBaseDirs). A set-but-missing path falls through.
+func TestFleetFileEnvOverrideWins(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "fleet.local.json"), `{"crew":["alice"]}`)
+	ext := filepath.Join(dir, "external", "myfleet.json")
+	writeFile(t, ext, `{"crew":["zoe"]}`)
+
+	t.Setenv("FLEETCHAT_FLEET_FILE", ext)
+	if got := fleetFile(dir); got != ext {
+		t.Fatalf("FLEETCHAT_FLEET_FILE must win over the overlay; got %q", got)
+	}
+	if fc := readFleet(dir); fc == nil || len(fc.Crew) != 1 || fc.Crew[0] != "zoe" {
+		t.Fatalf("readFleet should load the env-pointed crew, got %+v", fc)
+	}
+
+	// A set-but-missing env path must fall through to the overlay, not error.
+	t.Setenv("FLEETCHAT_FLEET_FILE", filepath.Join(dir, "does-not-exist.json"))
+	if got := fleetFile(dir); got != filepath.Join(dir, "fleet.local.json") {
+		t.Fatalf("missing env path should fall through to fleet.local.json; got %q", got)
 	}
 }
 

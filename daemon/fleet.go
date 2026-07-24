@@ -14,17 +14,32 @@ import (
 // "who's on the team" source run.py reads via fleet_file() on every boot; the Go
 // daemon previously read only roster.json and so never consulted it at all.
 type FleetConfig struct {
-	Domain string   `json:"domain"`
-	Lead   string   `json:"lead"`
-	Crew   []string `json:"crew"`
+	Domain string `json:"domain"`
+	// Lead is a ROUTING concern -- the persona that answers un-@-addressed human
+	// messages -- NOT a spawn source: seeding is driven purely by Crew. A lead
+	// that should also be a live agent must therefore appear in Crew too.
+	Lead string   `json:"lead"`
+	Crew []string `json:"crew"`
 }
 
 // fleetFile resolves the declared-crew file with the SAME precedence as
-// personaBaseDirs and run.py's fleet_file(): the git-ignored fleet.local.json
-// (the REAL fleet -- may name real people/infra, so it is never committed) wins
-// over the tracked fleet.json (the public demo crew). Returns "" if neither
-// exists, which the caller treats as "no declared crew", not an error.
+// personaBaseDirs and run.py's fleet_file(), most-specific first:
+//
+//	$FLEETCHAT_FLEET_FILE  ->  fleet.local.json  ->  fleet.json
+//
+// $FLEETCHAT_FLEET_FILE (paired with $FLEETCHAT_PERSONAS_DIR, which personaBaseDirs
+// honors) lets an operator keep their REAL fleet FULLY outside the repo -- the
+// contract the tracked fleet.local.example.json documents. fleet.local.json is
+// the git-ignored in-repo overlay for the real fleet; fleet.json is the public
+// demo crew. Returns "" if none exists, which the caller treats as "no declared
+// crew", not an error. A set-but-missing env path is SKIPPED (fall through to the
+// next candidate) rather than trusted blindly -- the file must actually exist.
 func fleetFile(repoRoot string) string {
+	if env := os.Getenv("FLEETCHAT_FLEET_FILE"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
 	for _, name := range []string{"fleet.local.json", "fleet.json"} {
 		p := filepath.Join(repoRoot, name)
 		if _, err := os.Stat(p); err == nil {
