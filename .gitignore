@@ -8,7 +8,7 @@ config.json
 .env
 
 # your real fleet + personas -- may name real people/infra, so NEVER commit them.
-# Only fleet.local.example.json is tracked. Resolver: run.py -> fleet_file()/persona_base_dirs().
+# Only fleet.local.example.json (a template) is tracked. Resolver: fleetFile()/personaBaseDirs() in daemon/.
 fleet.local.json
 personas.local/
 

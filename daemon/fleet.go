@@ -28,12 +28,14 @@ type FleetConfig struct {
 //	$FLEETCHAT_FLEET_FILE  ->  fleet.local.json  ->  fleet.json
 //
 // $FLEETCHAT_FLEET_FILE (paired with $FLEETCHAT_PERSONAS_DIR, which personaBaseDirs
-// honors) lets an operator keep their REAL fleet FULLY outside the repo -- the
-// contract the tracked fleet.local.example.json documents. fleet.local.json is
-// the git-ignored in-repo overlay for the real fleet; fleet.json is the public
-// demo crew. Returns "" if none exists, which the caller treats as "no declared
-// crew", not an error. A set-but-missing env path is SKIPPED (fall through to the
-// next candidate) rather than trusted blindly -- the file must actually exist.
+// honors) lets an operator keep their crew FULLY outside the repo -- the contract
+// the tracked fleet.local.example.json documents. fleet.local.json is the
+// git-ignored in-repo overlay for a crew you don't want committed; fleet.json is
+// an optional in-repo roster you can create. NOTHING ships in any of these -- a
+// fresh clone has none of them, so the board boots EMPTY and you add agents with
+// the "+ Add agent" button. Returns "" if none exists, which the caller treats as
+// "no declared crew", not an error. A set-but-missing env path is SKIPPED (fall
+// through to the next candidate) rather than trusted blindly -- the file must exist.
 func fleetFile(repoRoot string) string {
 	if env := os.Getenv("FLEETCHAT_FLEET_FILE"); env != "" {
 		if _, err := os.Stat(env); err == nil {

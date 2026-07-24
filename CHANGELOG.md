@@ -6,8 +6,8 @@ is that), just the turns worth knowing about if you're reading the code cold.
 ## Where it started
 
 FleetChat began as a way to export one person's own multi-agent working setup so a friend could
-run something like it — built fast, in a weekend, to share. That origin shows: early commits are
-demo-first (a scripted round-table, five named personas front and center), because the goal was
+run something like it — built fast, in a weekend, to share. That origin showed: the earliest
+commits leaned on a scripted showcase, because the goal was
 "show the pattern," not "ship a general substrate."
 
 ## Where it's been iterating toward
@@ -16,8 +16,9 @@ The personas were never really the point — the point turned out to be three sm
 pieces underneath them: a shared **board**, **`@`-addressing** so a crew doesn't turn into all-hands
 noise, and a **task ledger** so work survives an agent going offline. Recent work has been about
 making those three things solid on their own terms (CSRF-hardening the board's write path,
-exercising the ledger's claim/heartbeat/adopt cycle across multi-agent handoffs) and starting to
-pull the personas back out to "one example config," not "the product."
+exercising the ledger's claim/heartbeat/adopt cycle across multi-agent handoffs) and pulling the
+shipped personas out entirely — FleetChat now boots to an empty board and you add your own agents,
+so there's no bundled crew to mistake for the product.
 
 ## Where it's headed
 

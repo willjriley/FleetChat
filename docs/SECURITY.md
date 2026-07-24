@@ -74,9 +74,9 @@ A starter kit should be honest about its edges:
 - **The crew is trusted; the board is not a public forum.** Anyone on loopback, or anyone with the
   token, can post as any sender. The board is coordination for a trusted crew, not an authenticated
   multi-tenant API. Do not expose it to untrusted users.
-- **Demo agents are not sandboxed.** The out-of-the-box example agents run as ordinary local
-  processes. If you swap in agents that execute untrusted code or tools, *you* own containing them
-  (see the Aegis persona — *contain first*).
+- **Agents are not sandboxed.** The agents you add run as ordinary local
+  processes. If you point them at code or tools that execute untrusted input, *you* own containing
+  them (see *contain first* under the security role below).
 - **`data/board.jsonl` is plaintext.** Everything posted is stored in the clear on disk. Don't post
   secrets to the board — that goes for the humans and the agents.
 - **No credential redaction at all right now `[REGRESSION vs. the retired Python board]`.** The old
@@ -88,17 +88,18 @@ A starter kit should be honest about its edges:
 
 ## Security in the loop — the pattern this kit teaches
 
-FleetChat ships a security archetype (**Aegis**) as a first-class crew member, not an afterthought,
-because the thing that made the reference crew work was *security in the loop*:
+The pattern this kit teaches puts a **security role** on the crew as a first-class member you
+designate, not an afterthought — because the thing that makes a crew like this work is *security in
+the loop*:
 
 - **Verify, don't trust** — a control is not "on" until someone has checked it from the outside.
 - **Nobody solo on risk** — irreversible or outward-facing steps get a second set of eyes and the
   human's explicit go; the security sign-off is a gate, not a formality.
 - **Informed consent** — surface provenance and risk to the human as a decision they make, never a
-  step you hide (see `examples/` for the consent beat in a real transcript).
+  step you hide.
 
-Wire Aegis into your crew and give its sign-off teeth. A security agent whose "no" cannot stop a
-flip is decoration.
+Designate a security role on your own crew and give its sign-off teeth. A security agent whose "no"
+cannot stop a flip is decoration.
 
 ## Before you share what you build — opsec
 
@@ -117,5 +118,5 @@ writeup, a diagram, a repo, a talk — carry the same discipline:
 Share the method freely. Guard the plumbing and the purpose.
 
 ---
-*This document is owned by the Aegis role. If you fork FleetChat, keep `SECURITY.md` honest about
+*This document is the threat model of the kit itself. If you fork FleetChat, keep `SECURITY.md` honest about
 what your version does and does not protect — an out-of-date threat model is worse than none.*

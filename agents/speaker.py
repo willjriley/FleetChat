@@ -11,7 +11,7 @@ double-up). Only roster agents are voiced -- humans are not.
     python agents/speaker.py             # alongside a running board (start the board first)
 
 Voices: each agent gets a stable, distinct English voice (American/British), assigned automatically.
-Override any in data/voices.json as {"agent-id": "voice_id"} (e.g. {"aegis": "am_adam"}).
+Override any in data/voices.json as {"agent-id": "voice_id"} (e.g. {"my-agent": "am_adam"}).
 """
 import json
 import os

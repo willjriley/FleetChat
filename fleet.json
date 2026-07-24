@@ -1,5 +1,0 @@
-{
-  "_comment": "Your crew. The server reads this on boot to decide which agents to launch. Each entry is a persona NAME under personas/ -- never a command or a path (the server validates that, see docs/SECURITY.md). Reorder, trim, or duplicate to shape a per-project crew without touching any code. Delete this file to fall back to launching every persona folder.",
-  "domain": "<YOUR DOMAIN>",
-  "crew": ["lodestar", "aegis", "muse", "keystone", "lumen"]
-}

@@ -17,14 +17,13 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
-// The git-ignored fleet.local.json (the operator's REAL fleet) must win over the
-// tracked demo fleet.json -- the same precedence personaBaseDirs and run.py use.
-// Generic placeholder names only: this file is committed, so it must never name
-// a real crew.
-func TestFleetFilePrefersLocalOverDemo(t *testing.T) {
+// The git-ignored fleet.local.json (a crew you don't commit) must win over a
+// plain fleet.json -- the same precedence personaBaseDirs uses. Placeholder names
+// only: this file is committed, so it must never name a real crew.
+func TestFleetFilePrefersLocalOverPlain(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLEETCHAT_FLEET_FILE", "") // hermetic: ignore any ambient override
-	writeFile(t, filepath.Join(dir, "fleet.json"), `{"crew":["demo"]}`)
+	writeFile(t, filepath.Join(dir, "fleet.json"), `{"crew":["carol"]}`)
 	if got := fleetFile(dir); got != filepath.Join(dir, "fleet.json") {
 		t.Fatalf("with only fleet.json, want it resolved; got %q", got)
 	}

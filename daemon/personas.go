@@ -8,9 +8,10 @@ import (
 )
 
 // Faithful port of run_agent.py's persona_base_dirs()/load_agent(): external
-// $FLEETCHAT_PERSONAS_DIR, then personas.local/ (git-ignored -- the REAL
-// fleet's own personas), then the committed personas/ (the public demo
-// crew). Same lookup order, same files (agent.json + PERSONA.md).
+// $FLEETCHAT_PERSONAS_DIR, then personas.local/ (git-ignored -- a crew you don't
+// want committed), then the committed personas/ (any you choose to add). NOTHING
+// ships in either -- a fresh clone has no personas at all, so the board boots
+// EMPTY. Same lookup order, same files (agent.json + PERSONA.md).
 var personaIDRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 type PersonaConfig struct {
@@ -42,8 +43,8 @@ func personaBaseDirs(repoRoot string) []string {
 }
 
 // loadPersona returns (config, personaText, found). A dynamically-added
-// agent (no persona folder -- e.g. one just picked via a folder) gets a
-// synthesized generic persona, exactly like the Python original.
+// agent (no persona folder -- e.g. one just added by pointing at a folder) gets
+// a synthesized default persona, exactly like the Python original.
 func loadPersona(repoRoot, id string) (PersonaConfig, string) {
 	// SECURITY (§6 path-traversal): only a well-formed id may drive a
 	// filesystem lookup -- an id like "../../../Users/x/somedir" must never join

@@ -7,7 +7,7 @@ Import it:
     import sys; sys.path.insert(0, ".../FleetChat/skill/fleet-chat")
     from fleetchat import Board
     board = Board()                        # reads FLEETCHAT_URL + FLEETCHAT_TOKEN from env
-    board.post("keystone", "on the board.")
+    board.post("infra", "on the board.")
     last = 0
     while True:
         for m in board.watch(since=last):  # blocks until new messages (or a timeout)
@@ -16,7 +16,7 @@ Import it:
 
 ...or from the CLI:
 
-    python fleetchat.py post keystone "on the board."
+    python fleetchat.py post infra "on the board."
     python fleetchat.py read 0
     python fleetchat.py watch 42
 

@@ -326,13 +326,7 @@
   // one wins, else a stable name-hash pick, so it always works. These are BROWSER voices (Web Speech
   // API) -- a self-contained fallback. If you run a server-side TTS speaker instead, the page detects
   // it (see loadTtsState) and the browser voices stand down automatically. Edit for your own agents.
-  var VOICE_MAP = {
-    lodestar: ["david","guy","us english"],
-    aegis:    ["mark","eric","christopher"],
-    muse:     ["zira","aria","jenny","female"],
-    keystone: ["george","ryan","uk english male"],
-    lumen:    ["roger","steffan","daniel"]
-  };
+  var VOICE_MAP = {}; // pin an agent's browser voice with "agent-id": ["voice-name-hint", ...]; unset = a stable name-hash pick
   function voiceFor(name){
     if(!voices.length) loadVoices();
     if(!voices.length) return null;
