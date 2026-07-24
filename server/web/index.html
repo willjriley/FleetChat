@@ -524,17 +524,27 @@
       .then(function(j){ if(j && j.mode){ voiceMode=j.mode; } }).catch(function(){}); // sync the engine choice; browser voices are gated by voiceMode+mute now (decoupled)
   }
   function addAgent(){
-    // native folder picker first (a real OS dialog on this machine); typed-path fallback
-    fetch("/control/pick",{method:"POST",headers:headers()})
+    // Native OS folder dialog first -- but a headless board (no interactive
+    // desktop, e.g. a background/service launch) makes that dialog hang forever,
+    // so race it against a timeout and fall back to a typed path. The button must
+    // never just sit there doing nothing.
+    var handled=false;
+    function typedFallback(){ if(handled) return; handled=true;
+      var f=prompt("Paste the project folder path for the new agent (its folder name becomes the agent name):");
+      if(f) doAdd(f.trim()); }
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function(){ if(ctrl) ctrl.abort(); typedFallback(); }, 8000);
+    fetch("/control/pick",{method:"POST",headers:headers(), signal: ctrl?ctrl.signal:undefined})
       .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
       .then(function(res){
-        if(res.s===401){ askToken(); return; }
-        if(res.s===200 && res.j.folder){ doAdd(res.j.folder); return; }
-        if(res.j && res.j.error==="cancelled"){ return; }
-        var f=prompt("Paste the project folder path for the new agent (its name becomes the agent name):");
-        if(f) doAdd(f.trim());
+        clearTimeout(timer);
+        if(handled) return;
+        if(res.s===401){ handled=true; askToken(); return; }
+        if(res.s===200 && res.j.folder){ handled=true; doAdd(res.j.folder); return; }
+        if(res.j && res.j.error==="cancelled"){ handled=true; return; }
+        typedFallback(); // picker returned but gave no folder (e.g. headless) -> typed path
       })
-      .catch(function(){ var f=prompt("Paste the project folder path for the new agent:"); if(f) doAdd(f.trim()); });
+      .catch(function(){ clearTimeout(timer); typedFallback(); });
   }
   function doAdd(folder){
     fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),

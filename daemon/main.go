@@ -836,11 +836,22 @@ func isReservedOrKnownAgent(claimed string, reg *Registry, repoRoot string) bool
 // tkinter subprocess -- a real OS dialog, not a browser file input (which
 // can't return a directory path, only files).
 func nativeFolderPicker() (string, error) {
-	script := `Add-Type -AssemblyName System.Windows.Forms
+	// Headless guard (line 1): with no interactive desktop -- a background/service
+	// launch -- FolderBrowserDialog opens on an invisible window station and
+	// BLOCKS forever. [Environment]::UserInteractive is false there, so exit
+	// immediately and let the caller fall back to a typed path instead of hanging
+	// the request (the "+ Add agent does nothing" bug).
+	script := `if (-not [Environment]::UserInteractive) { exit 3 }
+Add-Type -AssemblyName System.Windows.Forms
 $f = New-Object System.Windows.Forms.FolderBrowserDialog
 $f.Description = "Pick a project folder for the new agent"
 if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }`
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	// Bounded even with a desktop: a dialog left open must never pin a request
+	// handler indefinitely. A real user picks well within this; past it we error
+	// and the UI offers the typed-path fallback.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
