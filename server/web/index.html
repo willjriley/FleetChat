@@ -184,6 +184,11 @@
   .modal-head .x{margin-left:auto; border:0; background:transparent; color:var(--muted); font-size:22px; line-height:1; cursor:pointer; padding:2px 8px; border-radius:7px}
   .modal-head .x:hover{background:var(--chip); color:var(--ink)}
   .modal-body{padding:6px 18px 20px}
+  .folderlist{margin-top:10px; border:1px solid var(--line); border-radius:8px; max-height:300px; overflow-y:auto}
+  .folderrow{display:flex; align-items:center; gap:8px; padding:8px 11px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--line)}
+  .folderrow:last-child{border-bottom:0}
+  .folderrow:hover, .folderrow:focus{background:var(--chip); outline:none}
+  .folderrow .fi{opacity:.85; flex:none}
   .set-sec{margin-top:18px}
   .set-sec h3{font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 8px}
   .set-row{display:flex; align-items:baseline; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); font-size:13px}
@@ -524,68 +529,87 @@
       .then(function(j){ if(j && j.mode){ voiceMode=j.mode; } }).catch(function(){}); // sync the engine choice; browser voices are gated by voiceMode+mute now (decoupled)
   }
   function addAgent(){
-    // A proper in-browser dialog, shown INSTANTLY -- no native-picker hang. A text
-    // field is the reliable cross-platform way to get an absolute folder path (a
-    // browser can't hand one over from a file input), and the Browse button uses
-    // the OS picker when a desktop is available WITHOUT ever blocking the dialog.
+    // A real folder browser driven by the daemon's /control/browse. Works whether
+    // the board is on a desktop or headless -- no native OS dialog, no PowerShell:
+    // you click folders here and the SERVER returns real absolute paths (which a
+    // browser's own folder input can't). You can also type/paste a path (Enter to
+    // open it), and "Add agent here" uses whatever folder you're currently in.
     if(document.getElementById("addagent-modal")) return;
     var bd=document.createElement("div"); bd.className="modal-backdrop"; bd.id="addagent-modal";
-    var m=document.createElement("div"); m.className="modal"; m.style.maxWidth="480px";
+    var m=document.createElement("div"); m.className="modal"; m.style.maxWidth="540px";
     var head=document.createElement("div"); head.className="modal-head";
-    var h2=document.createElement("h2"); h2.textContent="Add agent"; head.appendChild(h2);
+    var h2=document.createElement("h2"); h2.textContent="Add agent — pick a folder"; head.appendChild(h2);
     var xb=document.createElement("button"); xb.className="x"; xb.textContent="×"; xb.title="Close"; head.appendChild(xb);
     m.appendChild(head);
     var body=document.createElement("div"); body.className="modal-body";
     var lab=document.createElement("div"); lab.className="set-note"; lab.style.marginBottom="8px";
-    lab.textContent="Project folder for the new agent — its folder name becomes the agent's name, and the agent runs from there.";
+    lab.textContent="The agent runs from this folder and takes its name. Click a folder to open it, or type/paste a path and press Enter.";
     body.appendChild(lab);
     var rowdiv=document.createElement("div"); rowdiv.style.display="flex"; rowdiv.style.gap="8px"; rowdiv.style.alignItems="center";
     var inp=document.createElement("input"); inp.type="text"; inp.placeholder="C:\\repos\\my-project"; inp.style.flex="1";
-    var browse=document.createElement("button"); browse.type="button"; browse.className="ctl"; browse.textContent="Browse…"; browse.title="Open the native folder picker (needs a desktop session)";
-    rowdiv.appendChild(inp); rowdiv.appendChild(browse); body.appendChild(rowdiv);
+    var up=document.createElement("button"); up.type="button"; up.className="ctl"; up.textContent="⬆ Up"; up.title="Go to the parent folder";
+    rowdiv.appendChild(inp); rowdiv.appendChild(up); body.appendChild(rowdiv);
+    var list=document.createElement("div"); list.className="folderlist"; body.appendChild(list);
     var err=document.createElement("div"); err.className="set-note"; err.style.color="#c0392b"; err.style.marginTop="8px"; err.style.display="none";
     body.appendChild(err);
     var foot=document.createElement("div"); foot.style.display="flex"; foot.style.gap="8px"; foot.style.justifyContent="flex-end"; foot.style.marginTop="16px";
     var cancel=document.createElement("button"); cancel.type="button"; cancel.className="ctl"; cancel.textContent="Cancel";
-    var add=document.createElement("button"); add.type="button"; add.className="addbtn"; add.textContent="Add agent"; add.style.display="";
+    var add=document.createElement("button"); add.type="button"; add.className="addbtn"; add.textContent="Add agent here"; add.style.display="";
     foot.appendChild(cancel); foot.appendChild(add); body.appendChild(foot);
     m.appendChild(body); bd.appendChild(m); document.body.appendChild(bd);
     requestAnimationFrame(function(){ bd.classList.add("show"); });
-    setTimeout(function(){ inp.focus(); }, 40);
 
+    var curPath="", parentPath="";
     function close(){ if(bd.parentNode) bd.parentNode.removeChild(bd); document.removeEventListener("keydown", onKey); }
     function onKey(e){ if(e.key==="Escape") close(); }
     document.addEventListener("keydown", onKey);
     bd.addEventListener("click", function(e){ if(e.target===bd) close(); });
     xb.addEventListener("click", close); cancel.addEventListener("click", close);
 
+    function joinPath(base,name){ if(!base) return name; return base.replace(/[\\/]+$/,"")+"\\"+name; }
+    function browseTo(path){
+      err.style.display="none";
+      list.innerHTML="<div class='set-note' style='padding:8px'>loading…</div>";
+      fetch("/control/browse?path="+encodeURIComponent(path||""),{headers:headers()})
+        .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
+        .then(function(res){
+          if(res.s===401){ close(); askToken(); return; }
+          if(res.s>=400 || !res.j || res.j.path===undefined){ list.innerHTML=""; err.textContent=(res.j&&res.j.error)||("couldn't open that folder ("+res.s+")"); err.style.display=""; return; }
+          curPath=res.j.path; parentPath=res.j.parent||""; inp.value=curPath; up.disabled=!parentPath;
+          list.innerHTML="";
+          var dirs=res.j.dirs||[];
+          if(!dirs.length){ list.innerHTML="<div class='set-note' style='padding:8px'>(no sub-folders — “Add agent here” uses this folder)</div>"; return; }
+          dirs.forEach(function(name){
+            var row=document.createElement("div"); row.className="folderrow"; row.tabIndex=0;
+            var ic=document.createElement("span"); ic.className="fi"; ic.textContent="📁"; row.appendChild(ic);
+            var t=document.createElement("span"); t.textContent=name; row.appendChild(t);
+            function go(){ browseTo(joinPath(curPath,name)); }
+            row.addEventListener("click", go);
+            row.addEventListener("keydown", function(e){ if(e.key==="Enter") go(); });
+            list.appendChild(row);
+          });
+        })
+        .catch(function(){ list.innerHTML=""; err.textContent="Couldn't reach the server."; err.style.display=""; });
+    }
+    up.addEventListener("click", function(){ if(parentPath) browseTo(parentPath); });
+    inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); browseTo(inp.value.trim()); } });
+
     function submit(){
       var f=(inp.value||"").trim();
-      if(!f){ err.textContent="Enter a folder path."; err.style.display=""; inp.focus(); return; }
+      if(!f){ err.textContent="Pick or type a folder first."; err.style.display=""; return; }
       add.disabled=true; add.textContent="Adding…"; err.style.display="none";
       fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f})})
         .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
         .then(function(res){
           if(res.s===401){ close(); askToken(); return; }
-          if(res.s>=400){ add.disabled=false; add.textContent="Add agent"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
+          if(res.s>=400){ add.disabled=false; add.textContent="Add agent here"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
           close(); poll();
         })
-        .catch(function(){ add.disabled=false; add.textContent="Add agent"; err.textContent="Couldn't reach the server."; err.style.display=""; });
+        .catch(function(){ add.disabled=false; add.textContent="Add agent here"; err.textContent="Couldn't reach the server."; err.style.display=""; });
     }
     add.addEventListener("click", submit);
-    inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); submit(); } });
 
-    // Optional native picker: fills the field if it returns a folder; if it hangs
-    // (headless) or is cancelled, the dialog is untouched and you just type.
-    browse.addEventListener("click", function(){
-      browse.disabled=true; browse.textContent="Opening…";
-      var ctrl=window.AbortController?new AbortController():null;
-      var t=setTimeout(function(){ if(ctrl) ctrl.abort(); }, 8000);
-      fetch("/control/pick",{method:"POST",headers:headers(),signal:ctrl?ctrl.signal:undefined})
-        .then(function(r){ return r.json(); })
-        .then(function(j){ clearTimeout(t); browse.disabled=false; browse.textContent="Browse…"; if(j&&j.folder){ inp.value=j.folder; inp.focus(); } })
-        .catch(function(){ clearTimeout(t); browse.disabled=false; browse.textContent="Browse…"; err.textContent="Native dialog isn't available here (no desktop) — type or paste the path above."; err.style.display=""; });
-    });
+    browseTo(""); // start at the server's default (the user's home dir)
   }
   function doAdd(folder){
     fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),

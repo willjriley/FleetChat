@@ -285,6 +285,23 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "folder": folder})
 	})
 
+	// /control/browse: a server-side directory lister so the UI can offer a real
+	// folder picker that WORKS HEADLESS. The browser's own folder input can't hand
+	// back an absolute path (security), and the native OS dialog needs a desktop --
+	// but the daemon has filesystem access, so it lists sub-folders + their real
+	// absolute paths and the browser navigates them. Read-only: folder NAMES only,
+	// never file contents. GET, Host-checked by the middleware like other reads.
+	mux.HandleFunc("/control/browse", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		dirs, cur, parent, err := listDirs(r.URL.Query().Get("path"))
+		if err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"path": cur, "parent": parent, "dirs": dirs})
+	})
+
 	mux.HandleFunc("/control/add", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Folder string `json:"folder"`
@@ -857,6 +874,45 @@ if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// listDirs returns the immediate SUB-FOLDERS of p (names only, sorted), plus the
+// resolved absolute path and its parent ("" when at a filesystem root). An empty
+// p defaults to the user's home dir. Read-only by construction -- it never opens
+// a file, only enumerates directory names -- so the /control/browse picker can
+// navigate the tree without exposing any file content.
+func listDirs(p string) (dirs []string, cur string, parent string, err error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		if h, e := os.UserHomeDir(); e == nil {
+			p = h
+		} else {
+			p = "."
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("bad path")
+	}
+	fi, err := os.Stat(abs)
+	if err != nil || !fi.IsDir() {
+		return nil, "", "", fmt.Errorf("not a folder: %s", abs)
+	}
+	ents, err := os.ReadDir(abs)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("can't read that folder (permission?)")
+	}
+	dirs = []string{}
+	for _, e := range ents {
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i]) < strings.ToLower(dirs[j]) })
+	if par := filepath.Dir(abs); par != abs {
+		parent = par
+	}
+	return dirs, abs, parent, nil
 }
 
 func serveViewer(w http.ResponseWriter, r *http.Request, welcome string, subscribe func(*Viewer) func(), onInput func(string) error) {
