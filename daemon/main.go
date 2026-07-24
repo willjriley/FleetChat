@@ -129,10 +129,15 @@ func main() {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 			Role string `json:"role"`
+			CLI  string `json:"cli"`
 		}
 		out := make([]rosterEntry, 0)
 		for _, a := range reg.All() {
-			out = append(out, rosterEntry{ID: a.id, Name: a.persona.Name, Role: a.persona.Role})
+			cli := a.opts.CLI
+			if cli == "" {
+				cli = "claude" // the default backend when a persona doesn't set one
+			}
+			out = append(out, rosterEntry{ID: a.id, Name: a.persona.Name, Role: a.persona.Role, CLI: cli})
 		}
 		// reg.All() walks a Go map -- deliberately randomized iteration order by
 		// language design -- so without this sort the sidebar reshuffles on every
@@ -309,7 +314,7 @@ func main() {
 			return
 		}
 		persona, personaText := loadPersona(repoRoot, name)
-		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, Persona: personaText}, persona)
+		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, Persona: personaText, CLI: persona.CLI}, persona)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
