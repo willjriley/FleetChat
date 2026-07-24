@@ -174,16 +174,23 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 	// already returned and released this lock.
 	a.onExit = func() {
 		r.mu.Lock()
+		stillCurrent := false
 		if cur, ok := r.agents[id]; ok && cur == a {
 			delete(r.agents, id)
+			stillCurrent = true
 		}
 		r.mu.Unlock()
 		// A resume that never reached system/init did not work -- an expired or
 		// server-side-deleted session is the ordinary cause. Drop the stored id
 		// so the next spawn starts clean instead of retrying a dead session
 		// forever, which would turn one stale id into a permanent respawn loop.
+		//
+		// Gated on stillCurrent (this agent is STILL the registered one for its
+		// id), the SAME identity guard the map-delete above uses: if a
+		// replacement has already taken the id, its freshly-saved session is now
+		// the one on disk, and this late-dying goroutine must not forget it.
 		// Deliberately OUTSIDE r.mu: this does file I/O.
-		if attemptedResume != "" && r.repoRoot != "" {
+		if stillCurrent && attemptedResume != "" && r.repoRoot != "" {
 			a.mu.Lock()
 			live := a.sessionID
 			a.mu.Unlock()
@@ -263,6 +270,12 @@ func (r *Registry) RestartAll() int {
 	n := 0
 	for _, a := range r.All() {
 		id, opts, persona := a.id, a.opts, a.persona
+		// Re-read the freshest session from disk on respawn rather than reusing
+		// this process's boot-time id (a.opts is frozen at spawn; route() updates
+		// a.sessionID, never a.opts). Clearing it makes Spawn do the sessions.json
+		// lookup -- the same path a full board restart takes -- which also re-arms
+		// the forget-on-failed-resume safety net for this in-process restart.
+		opts.ResumeSession = ""
 		if err := r.Kill(id); err != nil {
 			continue
 		}

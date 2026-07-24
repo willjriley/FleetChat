@@ -17,20 +17,22 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
-// The git-ignored fleet.local.json (the REAL fleet) must win over the tracked
-// demo fleet.json -- the same precedence personaBaseDirs and run.py use.
+// The git-ignored fleet.local.json (the operator's REAL fleet) must win over the
+// tracked demo fleet.json -- the same precedence personaBaseDirs and run.py use.
+// Generic placeholder names only: this file is committed, so it must never name
+// a real crew.
 func TestFleetFilePrefersLocalOverDemo(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "fleet.json"), `{"crew":["demo"]}`)
 	if got := fleetFile(dir); got != filepath.Join(dir, "fleet.json") {
 		t.Fatalf("with only fleet.json, want it resolved; got %q", got)
 	}
-	writeFile(t, filepath.Join(dir, "fleet.local.json"), `{"crew":["forge"]}`)
+	writeFile(t, filepath.Join(dir, "fleet.local.json"), `{"crew":["alice"]}`)
 	if got := fleetFile(dir); got != filepath.Join(dir, "fleet.local.json") {
 		t.Fatalf("fleet.local.json must win over fleet.json; got %q", got)
 	}
 	fc := readFleet(dir)
-	if fc == nil || len(fc.Crew) != 1 || fc.Crew[0] != "forge" {
+	if fc == nil || len(fc.Crew) != 1 || fc.Crew[0] != "alice" {
 		t.Fatalf("readFleet should load the local crew, got %+v", fc)
 	}
 }
@@ -40,7 +42,7 @@ func TestFleetFilePrefersLocalOverDemo(t *testing.T) {
 func TestSeedRosterFromFleet(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "fleet.local.json"),
-		`{"domain":"the fleet","lead":"forge","crew":["forge","dmx","shield","hope","aw"]}`)
+		`{"domain":"demo","lead":"alice","crew":["alice","bob","carol","dave","erin"]}`)
 
 	got := seedRosterFromFleet(dir)
 	if len(got) != 5 {
@@ -51,7 +53,7 @@ func TestSeedRosterFromFleet(t *testing.T) {
 	if len(persisted) != 5 {
 		t.Fatalf("seed must persist to data/roster.json, read back %d", len(persisted))
 	}
-	if persisted[0].Name != "forge" {
+	if persisted[0].Name != "alice" {
 		t.Fatalf("crew order should be preserved; got %q first", persisted[0].Name)
 	}
 }
@@ -60,14 +62,14 @@ func TestSeedRosterFromFleet(t *testing.T) {
 // a reserved name, a flag-shaped token) into the roster, and duplicates collapse.
 func TestSeedRosterRejectsBadNames(t *testing.T) {
 	dir := t.TempDir()
-	crew := []string{"forge", "forge", "BOARD", "all", "../etc", "has space", "ok_1"}
+	crew := []string{"alice", "alice", "BOARD", "all", "../etc", "has space", "ok_1"}
 	b, _ := json.Marshal(FleetConfig{Crew: crew})
 	writeFile(t, filepath.Join(dir, "fleet.local.json"), string(b))
 
 	got := seedRosterFromFleet(dir)
-	// Keep: forge (once), ok_1. Drop: dup forge, "board"/"all" reserved,
+	// Keep: alice (once), ok_1. Drop: dup alice, "board"/"all" reserved,
 	// "../etc" + "has space" invalid id.
-	want := map[string]bool{"forge": true, "ok_1": true}
+	want := map[string]bool{"alice": true, "ok_1": true}
 	if len(got) != len(want) {
 		t.Fatalf("want %d valid entries, got %d: %+v", len(want), len(got), got)
 	}

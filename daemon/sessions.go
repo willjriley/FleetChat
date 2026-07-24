@@ -24,8 +24,8 @@ import (
 // and is actively harmful here: --continue resumes "the most recent
 // conversation in the current directory", and the daemon spawns EVERY agent
 // from its own single working directory. All of them would resume the same
-// most-recent session and inherit each other's context -- forge waking up as
-// shield. That is worse than amnesia; it is identity collapse, and it would
+// most-recent session and inherit each other's context -- alice waking up as
+// bob. That is worse than amnesia; it is identity collapse, and it would
 // present as agents mysteriously knowing things they were never told.
 // --resume <session-id> with an id stored per agent is the version that
 // actually keeps them separate.

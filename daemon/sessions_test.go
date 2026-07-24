@@ -24,11 +24,11 @@ const goodSID2 = "a1b2c3d4-1111-2222-3333-444455556666"
 // shows it the full history.
 func TestSessionSurvivesRestart(t *testing.T) {
 	root := t.TempDir()
-	saveSession(root, "dmx", goodSID)
-	saveSession(root, "forge", goodSID2)
+	saveSession(root, "alice", goodSID)
+	saveSession(root, "bob", goodSID2)
 
 	m := loadSessions(root)
-	if m["dmx"] != goodSID || m["forge"] != goodSID2 {
+	if m["alice"] != goodSID || m["bob"] != goodSID2 {
 		t.Fatalf("sessions did not survive: %v", m)
 	}
 }
@@ -39,11 +39,11 @@ func TestSessionSurvivesRestart(t *testing.T) {
 // directly rather than assuming.
 func TestSessionsArePerAgentNotShared(t *testing.T) {
 	root := t.TempDir()
-	saveSession(root, "dmx", goodSID)
-	saveSession(root, "shield", goodSID2)
+	saveSession(root, "alice", goodSID)
+	saveSession(root, "carol", goodSID2)
 
 	m := loadSessions(root)
-	if m["dmx"] == m["shield"] {
+	if m["alice"] == m["carol"] {
 		t.Fatalf("agents must not share a session id: %v", m)
 	}
 	// And writing one must not clobber the other.
@@ -57,15 +57,15 @@ func TestSessionsArePerAgentNotShared(t *testing.T) {
 func TestLoadSessionsRejectsBadEntries(t *testing.T) {
 	root := t.TempDir()
 	writeSessions(t, root, `{
-		"dmx":"`+goodSID+`",
+		"alice":"`+goodSID+`",
 		"evil":"--dangerously-skip-permissions",
 		"traversal":"../../etc/passwd",
 		"BAD NAME":"`+goodSID2+`",
 		"notauuid":"12345",
-		"forge":"`+goodSID2+`"
+		"bob":"`+goodSID2+`"
 	}`)
 	m := loadSessions(root)
-	if m["dmx"] != goodSID || m["forge"] != goodSID2 {
+	if m["alice"] != goodSID || m["bob"] != goodSID2 {
 		t.Fatalf("valid entries must survive: %v", m)
 	}
 	for _, bad := range []string{"evil", "traversal", "BAD NAME", "notauuid"} {
@@ -99,7 +99,7 @@ func TestSessionIDShapeRejectsFlagInjection(t *testing.T) {
 // daemon that refuses to boot is worse.
 func TestLoadSessionsToleratesCorruptFile(t *testing.T) {
 	root := t.TempDir()
-	writeSessions(t, root, `{"dmx": "3f2504e0-4f89-11d3-`)
+	writeSessions(t, root, `{"alice": "3f2504e0-4f89-11d3-`)
 	if m := loadSessions(root); len(m) != 0 {
 		t.Fatalf("corrupt file should yield no sessions, got %v", m)
 	}
@@ -113,17 +113,17 @@ func TestLoadSessionsToleratesCorruptFile(t *testing.T) {
 // permanent crash-respawn loop; it must drop only its own entry.
 func TestForgetSessionDropsOnlyThatAgent(t *testing.T) {
 	root := t.TempDir()
-	saveSession(root, "dmx", goodSID)
-	saveSession(root, "forge", goodSID2)
+	saveSession(root, "alice", goodSID)
+	saveSession(root, "bob", goodSID2)
 
-	forgetSession(root, "dmx")
+	forgetSession(root, "alice")
 
 	m := loadSessions(root)
-	if _, ok := m["dmx"]; ok {
-		t.Fatalf("dmx should have been forgotten: %v", m)
+	if _, ok := m["alice"]; ok {
+		t.Fatalf("alice should have been forgotten: %v", m)
 	}
-	if m["forge"] != goodSID2 {
-		t.Fatalf("forge must be untouched: %v", m)
+	if m["bob"] != goodSID2 {
+		t.Fatalf("bob must be untouched: %v", m)
 	}
 	// Forgetting an unknown id is a no-op, not a corruption.
 	forgetSession(root, "nobody")
@@ -136,7 +136,7 @@ func TestForgetSessionDropsOnlyThatAgent(t *testing.T) {
 // files behind in data/.
 func TestSaveSessionLeavesNoTempFiles(t *testing.T) {
 	root := t.TempDir()
-	saveSession(root, "dmx", goodSID)
+	saveSession(root, "alice", goodSID)
 	entries, err := os.ReadDir(filepath.Join(root, "data"))
 	if err != nil {
 		t.Fatal(err)
