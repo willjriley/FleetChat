@@ -487,6 +487,28 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "id": na.id})
 	})
 
+	// Soft-interrupt: cancel an agent's in-flight turn WITHOUT the respawn's kill+relaunch.
+	// The process stays alive, session intact -- the light "Stop" the sidebar button uses.
+	mux.HandleFunc("/control/interrupt", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Agent string `json:"agent"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		a, ok := reg.Get(body.Agent)
+		if !ok {
+			w.WriteHeader(404)
+			json.NewEncoder(w).Encode(map[string]string{"error": "no such agent"})
+			return
+		}
+		if err := a.Interrupt(); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "interrupted": body.Agent})
+	})
+
 	mux.HandleFunc("/control/restart", func(w http.ResponseWriter, r *http.Request) {
 		board.Post("board", "Restarting the whole crew -- back in a few seconds.", []string{"restart"}, nil)
 		n := reg.RestartAll()
