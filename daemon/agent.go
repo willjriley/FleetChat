@@ -416,6 +416,37 @@ func (a *Agent) SendPrivatePrompt(text string) error {
 	return a.sendPrompt(text, true)
 }
 
+// Interrupt cancels the agent's IN-FLIGHT turn WITHOUT killing the process, by
+// writing a stream-json control_request{interrupt} to the CLI's stdin -- the same
+// mechanism the Claude Agent SDK's interrupt() uses. The process stays alive and
+// its session is untouched; only the current generation stops. This is the light
+// alternative to a respawn (kill + relaunch): no restart, no session reload. The
+// CLI emits its own end-of-turn result afterward, which readLoop handles (so the
+// pendingPrivate queue stays matched and typing clears normally).
+func (a *Agent) Interrupt() error {
+	req := map[string]interface{}{
+		"type":       "control_request",
+		"request_id": fmt.Sprintf("int_%s_%d", a.id, time.Now().UnixNano()),
+		"request":    map[string]interface{}{"subtype": "interrupt"},
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.in == nil {
+		return fmt.Errorf("agent %s has no live stdin to interrupt", a.id)
+	}
+	if _, err := a.in.Write(b); err != nil {
+		return err
+	}
+	if err := a.in.WriteByte('\n'); err != nil {
+		return err
+	}
+	return a.in.Flush()
+}
+
 func (a *Agent) sendPrompt(text string, private bool) error {
 	// Mirrors run_agent.py's `board.set_typing(id, True)` right before the claude call --
 	// set BEFORE the write below, not after, so the UI's "…" can never lag the real state.

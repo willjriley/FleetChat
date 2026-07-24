@@ -465,10 +465,10 @@
     });
   }
   function stopAgent(name){
-    // "Stop" = cancel the agent's in-flight turn. Reuses /control/respawn (kill + restart, which
-    // drops the current turn and resumes the agent's OWN session) -- the reliable mechanism today.
+    // "Stop" = soft-interrupt the agent's in-flight turn (a control_request to the CLI). The
+    // process stays alive and its session is untouched -- unlike a respawn (kill + relaunch).
     typingSet[name]=false; renderAgents();   // clear the working state right away
-    fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:name})})
+    fetch("/control/interrupt",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:name})})
       .then(function(r){ if(r.status===401){ askToken(); } })
       .catch(function(){});
   }

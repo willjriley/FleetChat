@@ -58,6 +58,7 @@ var mustPOST = map[string]bool{
 	"/control/restart":         true,
 	"/control/clear":           true,
 	"/control/respawn":         true,
+	"/control/interrupt":       true,
 	"/control/kick":            true,
 	"/control/pick":            true,
 	"/control/voices/download": true, // spawns the Kokoro downloader
