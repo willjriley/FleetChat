@@ -1,0 +1,40 @@
+#!/bin/sh
+# FleetChat pre-commit guard -- refuse to commit local / personal / secret files even if they were
+# force-added (`git add -f`) or a .gitignore rule was misconfigured. Belt-and-suspenders over
+# .gitignore so your real fleet, config, or token can never leak into the (often public) repo.
+#
+# Activate once per clone:   git config core.hooksPath .githooks
+# Bypass deliberately:       git commit --no-verify   (only if you REALLY mean it)
+
+blocked=$(git diff --cached --name-only | grep -E '^(fleet\.local\.json|config\.json|\.env)$|^personas\.local/' || true)
+
+if [ -n "$blocked" ]; then
+    echo "" >&2
+    echo "pre-commit BLOCKED: these files are local/personal and must never be committed:" >&2
+    echo "$blocked" | sed 's/^/  - /' >&2
+    echo "" >&2
+    echo "They hold your real fleet / config / secrets (kept out via .gitignore + this hook)." >&2
+    echo "Unstage them (git restore --staged <file>), or --no-verify if you truly intend to." >&2
+    echo "" >&2
+    exit 1
+fi
+
+# Refuse build artifacts / compiled binaries. They bloat the repo and -- for a
+# compiled binary -- embed the builder's ABSOLUTE source path + username (e.g.
+# C:/Users/<you>, C:/repos/<proj>) unless built with -trimpath. Covers tilde /
+# backup variants (daemon.exe~) that a plain `*.exe` .gitignore glob misses --
+# the exact gap that leaked a build path into this repo.
+binblocked=$(git diff --cached --name-only --diff-filter=d | grep -Ei '\.(exe|dll|so|dylib|bin|o|obj|a|lib|pdb|out)~?$' || true)
+
+if [ -n "$binblocked" ]; then
+    echo "" >&2
+    echo "pre-commit BLOCKED: build artifacts / binaries must not be committed:" >&2
+    echo "$binblocked" | sed 's/^/  - /' >&2
+    echo "" >&2
+    echo "Compiled binaries embed your absolute build path (C:/Users/<you>) and bloat the repo." >&2
+    echo "Add them to .gitignore (e.g. daemon/*.exe*, daemon/*~); rebuild with -trimpath if you must ship one." >&2
+    echo "Unstage (git restore --staged <file>), or --no-verify if you truly intend to." >&2
+    echo "" >&2
+    exit 1
+fi
+exit 0

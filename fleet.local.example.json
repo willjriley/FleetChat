@@ -1,0 +1,6 @@
+{
+  "_comment": "OPTIONAL. A fresh clone boots to an empty board -- add agents with '+ Add agent' instead of editing this. To declare a crew up front, copy this to fleet.local.json (git-ignored). 'lead' = the persona that answers un-@-addressed human messages (omit/empty = any agent may). 'crew' = persona NAMES only (never a path or command); each needs personas.local/<name>/agent.json holding {name, id, role, intro} plus optional 'dir' (the folder that agent RUNS FROM, so its relative paths and CLAUDE.md resolve there) and 'cli' (claude|gemini|qwen, default claude; only claude is wired today). To keep personas outside the repo, set FLEETCHAT_FLEET_FILE and FLEETCHAT_PERSONAS_DIR.",
+  "domain": "your product or team",
+  "lead": "<persona-id>",
+  "crew": ["<persona-id>", "<persona-id>"]
+}
