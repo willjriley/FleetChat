@@ -1,6 +1,6 @@
 # FleetChat
 
-A small, local, clone-and-run sandbox for AI-agent orchestration: a few `claude` agents and you, coordinating on one shared board. It's a starter kit, not a product. It ships as a **blank slate** — no personas, no bundled crew, an empty board you add your own agents to.
+A small, local, clone-and-run sandbox for AI-agent orchestration: a few `claude` agents and you, coordinating on one shared board. It's a starter kit, not a product. It ships as a **blank slate** — no bundled crew, an empty board you add your own agents to.
 
 ```
 git clone <this repo>
@@ -27,7 +27,7 @@ First run opens the UI to an empty board. Click **+ Add agent**, point it at a p
 - a **CLI picker** — `claude` is wired up; `gemini` and `qwen` are selectable but their adapters aren't built yet;
 - a **voice picker** — only if server voices are installed (see *Voices*).
 
-Added agents persist to `data/roster.json`. Double-click a name to **edit** it (change its CLI or voice) or **remove** it. To map a name to a home folder + CLI, drop a `personas/<name>/agent.json` (`dir` + `cli`) — an agent's identity is its home folder's own `CLAUDE.md`, nothing injected on top. To declare a whole crew up front, drop a git-ignored `fleet.local.json` + `personas.local/` (copy `fleet.local.example.json` to start), or point `$FLEETCHAT_PERSONAS_DIR` outside the repo.
+Added agents persist to `data/roster.json` — each agent's home folder and CLI, set right there in the dialog. Double-click a name to **edit** it (folder, CLI, or voice) or **remove** it. An agent's identity is its home folder's own `CLAUDE.md`; FleetChat injects nothing on top. To declare a crew up front, drop a git-ignored `fleet.local.json` (crew names + an optional routing `lead`; copy `fleet.local.example.json` to start), then set each one's folder in the Edit dialog.
 
 ## Addressing & memory
 

@@ -50,8 +50,8 @@ type rawClaudeLine struct {
 
 type Agent struct {
 	id        string
-	opts      AgentOptions  // remembered so a restart can respawn with the SAME model/persona, not silently reset to defaults
-	persona   PersonaConfig // remembered so /roster and a tray restart can show/reuse the real name+role, not just the raw id
+	opts      AgentOptions // remembered so a restart can respawn with the SAME model/config, not silently reset to defaults
+	info      AgentInfo   // remembered so /roster and a tray restart can show/reuse the agent's name + run config, not just the raw id
 	cmd       *exec.Cmd
 	in        *bufio.Writer // subprocess stdin, wrapped for line-writing
 	mu        sync.Mutex
@@ -106,7 +106,7 @@ type Agent struct {
 	taught bool
 }
 
-// AgentOptions carries a single agent's launch config. Model/Persona/Folder are
+// AgentOptions carries a single agent's launch config. Model/Folder are
 // expressed in Claude's flag shape; CLI selects WHICH backend turns them into
 // its own flags (see buildCLICommand) -- a real Gemini/Qwen adapter emits its
 // own, not an assumption that --model/--system-prompt are universal.
@@ -115,8 +115,8 @@ type AgentOptions struct {
 	Folder string // "" = no home folder; otherwise the agent's cwd (its own repo) + --add-dir
 	// CLI picks which backend launches this agent: "claude" (default when "") |
 	// "gemini" | "qwen". Per-agent, so the board can run different CLIs in
-	// different folders. Read from the git-ignored persona config. Only the claude
-	// profile is fully wired today; see buildCLICommand.
+	// different folders. Set in the Add/Edit dialog and stored in the roster. Only
+	// the claude profile is fully wired today; see buildCLICommand.
 	CLI string
 	// ResumeSession is this agent's OWN prior claude session id ("" = start
 	// fresh). Set from data/sessions.json on respawn, which is what makes an
@@ -198,7 +198,7 @@ func claudeCommand(opts AgentOptions) (bin string, args []string) {
 
 // NewAgent starts the subprocess and builds the Agent, but deliberately does
 // NOT start readLoop -- the caller (Registry.Spawn) must finish setting
-// persona/onExit/onMessage/onTyping/onActivity and only THEN call Start(). Those fields
+// info/onExit/onMessage/onTyping/onActivity and only THEN call Start(). Those fields
 // used to get set after `go a.readLoop(stdout)` had already been kicked off
 // here, which meant a real (if narrow -- subprocess launch latency almost
 // always hides it) data race: a fast-starting process could reach route()'s
@@ -272,7 +272,7 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 }
 
 // Start begins reading the subprocess's output. Call it only after every
-// field readLoop/route() touch (persona, onExit, onMessage, onTyping, onActivity) is
+// field readLoop/route() touch (info, onExit, onMessage, onTyping, onActivity) is
 // already set -- see NewAgent's doc comment.
 func (a *Agent) Start(stdout io.Reader) {
 	go a.readLoop(stdout)

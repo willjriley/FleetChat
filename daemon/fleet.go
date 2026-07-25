@@ -15,21 +15,21 @@ import (
 // daemon previously read only roster.json and so never consulted it at all.
 type FleetConfig struct {
 	Domain string `json:"domain"`
-	// Lead is a ROUTING concern -- the persona that answers un-@-addressed human
+	// Lead is a ROUTING concern -- the agent that answers un-@-addressed human
 	// messages -- NOT a spawn source: seeding is driven purely by Crew. A lead
 	// that should also be a live agent must therefore appear in Crew too.
 	Lead string   `json:"lead"`
 	Crew []string `json:"crew"`
 }
 
-// fleetFile resolves the declared-crew file with the SAME precedence as
-// personaBaseDirs and run.py's fleet_file(), most-specific first:
+// fleetFile resolves the declared-crew file with the SAME precedence as run.py's
+// fleet_file(), most-specific first:
 //
 //	$FLEETCHAT_FLEET_FILE  ->  fleet.local.json  ->  fleet.json
 //
-// $FLEETCHAT_FLEET_FILE (paired with $FLEETCHAT_PERSONAS_DIR, which personaBaseDirs
-// honors) lets an operator keep their crew FULLY outside the repo -- the contract
-// the tracked fleet.local.example.json documents. fleet.local.json is the
+// $FLEETCHAT_FLEET_FILE lets an operator keep their declared crew FULLY outside
+// the repo -- the contract the tracked fleet.local.example.json documents.
+// fleet.local.json is the
 // git-ignored in-repo overlay for a crew you don't want committed; fleet.json is
 // an optional in-repo roster you can create. NOTHING ships in any of these -- a
 // fresh clone has none of them, so the board boots EMPTY and you add agents with

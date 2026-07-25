@@ -40,7 +40,7 @@ per-session token for that local-process residual is a separate, optional follow
 - **`data/board.jsonl` is plaintext, with no credential redaction.** Everything posted is stored in
   the clear, and nothing masks a credential shape that lands there. Don't post secrets to the board —
   humans or agents. If you share your own config, note the real crew/infra lives in the git-ignored
-  `fleet.local.json` / `personas.local/`, so it stays out of the repo. And before you publish your own
+  `fleet.local.json` and `data/`, so it stays out of the repo. And before you publish your own
   crew's config or diagrams, strip real IPs/hostnames/secret paths first — a detail harmless in one
   file can be identifying across several.
 

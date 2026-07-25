@@ -18,7 +18,7 @@ func writeFile(t *testing.T, path, body string) {
 }
 
 // The git-ignored fleet.local.json (a crew you don't commit) must win over a
-// plain fleet.json -- the same precedence personaBaseDirs uses. Placeholder names
+// plain fleet.json -- the documented resolver precedence. Placeholder names
 // only: this file is committed, so it must never name a real crew.
 func TestFleetFilePrefersLocalOverPlain(t *testing.T) {
 	dir := t.TempDir()
@@ -39,7 +39,7 @@ func TestFleetFilePrefersLocalOverPlain(t *testing.T) {
 
 // An explicit $FLEETCHAT_FLEET_FILE outranks the in-repo overlay, letting an
 // operator keep their real fleet fully outside the repo (the documented
-// contract + parity with personaBaseDirs). A set-but-missing path falls through.
+// contract). A set-but-missing path falls through.
 func TestFleetFileEnvOverrideWins(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "fleet.local.json"), `{"crew":["alice"]}`)
