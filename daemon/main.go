@@ -342,12 +342,12 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"error": "'" + name + "' is a reserved name (system/broadcast identity) -- pick a different folder"})
 			return
 		}
-		persona, personaText := loadPersona(repoRoot, name)
+		persona := loadPersona(repoRoot, name)
 		cli := persona.CLI
 		if body.CLI != "" {
-			cli = body.CLI // the operator's explicit pick in the Add-agent dialog wins over the persona default
+			cli = body.CLI // the operator's explicit pick in the Add-agent dialog wins over the configured default
 		}
-		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, Persona: personaText, CLI: cli}, persona)
+		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, CLI: cli}, persona)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -361,9 +361,8 @@ func main() {
 
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Persona string `json:"persona"`
+			ID    string `json:"id"`
+			Model string `json:"model"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -379,11 +378,8 @@ func main() {
 			http.Error(w, "id must be lowercase letters, digits, '-' or '_' (no path separators)", http.StatusBadRequest)
 			return
 		}
-		persona, personaText := loadPersona(repoRoot, body.ID)
-		if body.Persona != "" {
-			personaText = body.Persona // explicit override wins over the on-disk persona file
-		}
-		a, err := reg.Spawn(body.ID, AgentOptions{Model: body.Model, Persona: personaText}, persona)
+		persona := loadPersona(repoRoot, body.ID)
+		a, err := reg.Spawn(body.ID, AgentOptions{Model: body.Model}, persona)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -828,16 +824,16 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 		return
 	}
 	for _, e := range entries {
-		persona, personaText := loadPersona(repoRoot, e.Name)
+		persona := loadPersona(repoRoot, e.Name)
 		// Where this agent runs FROM (its cwd). A roster entry's own dir (set via
-		// the UI folder-picker) wins; otherwise the persona's configured home repo
+		// the UI folder-picker) wins; otherwise the configured home repo
 		// (personas.local/<id>/agent.json "dir"). This is what lands a bootstrapped
-		// specialist inside its own repo instead of the daemon dir.
+		// specialist inside its own repo -- where its OWN CLAUDE.md defines it.
 		folder := e.Dir
 		if folder == "" {
 			folder = persona.Dir
 		}
-		a, err := reg.Spawn(e.Name, AgentOptions{Persona: personaText, Folder: folder, CLI: persona.CLI}, persona)
+		a, err := reg.Spawn(e.Name, AgentOptions{Folder: folder, CLI: persona.CLI}, persona)
 		if err != nil {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue

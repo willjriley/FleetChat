@@ -7,11 +7,15 @@ import (
 	"regexp"
 )
 
-// Faithful port of run_agent.py's persona_base_dirs()/load_agent(): external
-// $FLEETCHAT_PERSONAS_DIR, then personas.local/ (git-ignored -- a crew you don't
-// want committed), then the committed personas/ (any you choose to add). NOTHING
-// ships in either -- a fresh clone has no personas at all, so the board boots
-// EMPTY. Same lookup order, same files (agent.json + PERSONA.md).
+// Per-agent RUN CONFIG (home dir + CLI + roster name/role), resolved from
+// external $FLEETCHAT_PERSONAS_DIR, then personas.local/ (git-ignored -- a crew
+// you don't want committed), then the committed personas/. NOTHING ships in
+// either -- a fresh clone has no crew config, so the board boots EMPTY.
+//
+// CONFIG ONLY: an agent's IDENTITY is its own home-repo CLAUDE.md, which the CLI
+// reads because the process runs from that folder (cmd.Dir). FleetChat injects
+// NO persona/system-prompt -- there is deliberately no second identity to drift
+// from or contradict the home repo. agent.json carries only where+how it runs.
 var personaIDRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 type PersonaConfig struct {
@@ -42,37 +46,32 @@ func personaBaseDirs(repoRoot string) []string {
 	return dirs
 }
 
-// loadPersona returns (config, personaText, found). A dynamically-added
-// agent (no persona folder -- e.g. one just added by pointing at a folder) gets
-// a synthesized default persona, exactly like the Python original.
-func loadPersona(repoRoot, id string) (PersonaConfig, string) {
+// loadPersona returns an agent's RUN CONFIG (home dir + CLI + roster name/role)
+// from its agent.json. It does NOT load or synthesize any identity/system-prompt:
+// the agent's identity is its home-repo CLAUDE.md, read by the CLI from cmd.Dir.
+// A dynamically-added agent with no agent.json gets a name/role derived from its id.
+func loadPersona(repoRoot, id string) PersonaConfig {
 	// SECURITY (§6 path-traversal): only a well-formed id may drive a
 	// filesystem lookup -- an id like "../../../Users/x/somedir" must never join
 	// into a path we read. personaIDRe is the same charset the live registry
 	// enforces (validID); a malformed id skips disk entirely and falls through to
-	// the synthesized default. This is what makes personaIDRe live rather than
-	// dead code, and is applied again at /spawn so a bad id is rejected up front.
+	// the id-derived default. Applied again at /spawn so a bad id is rejected up front.
 	if personaIDRe.MatchString(id) {
 		for _, base := range personaBaseDirs(repoRoot) {
 			agentJSON := filepath.Join(base, id, "agent.json")
 			if b, err := os.ReadFile(agentJSON); err == nil {
 				var cfg PersonaConfig
 				if json.Unmarshal(b, &cfg) == nil {
-					persona := ""
-					if pb, err := os.ReadFile(filepath.Join(base, id, "PERSONA.md")); err == nil {
-						persona = string(pb)
-					}
 					if cfg.ID == "" {
 						cfg.ID = id
 					}
-					return cfg, persona
+					return cfg
 				}
 			}
 		}
 	}
 	disp := capitalize(id)
-	return PersonaConfig{Name: disp, ID: id, Role: "crew member", Intro: disp + " here, joining the board."},
-		"You are " + disp + ", a member of a small agent crew on a team chat board. Be helpful, concise, and collaborative; reply in character."
+	return PersonaConfig{Name: disp, ID: id, Role: "crew member", Intro: disp + " here, joining the board."}
 }
 
 func capitalize(s string) string {

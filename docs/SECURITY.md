@@ -39,32 +39,10 @@ per-session token for that local-process residual is a separate, optional follow
   them.
 - **`data/board.jsonl` is plaintext, with no credential redaction.** Everything posted is stored in
   the clear, and nothing masks a credential shape that lands there. Don't post secrets to the board —
-  humans or agents.
-
-## Security in the loop — the pattern this kit teaches
-
-Put a **security role** on the crew as a first-class member you designate:
-
-- **Verify, don't trust** — a control isn't "on" until someone has checked it from the outside.
-- **Nobody solo on risk** — irreversible or outward-facing steps get a second set of eyes and the
-  human's explicit go; the security sign-off is a gate, not a formality. (It's a convention the
-  agents follow, not a lock the code enforces — wiring it into real controls is your job.)
-- **Informed consent** — surface provenance and risk to the human as a decision they make, never a
-  step you hide.
-
-A security agent whose "no" cannot stop a flip is decoration. Give its sign-off teeth.
-
-## Before you share what you build — opsec
-
-FleetChat is clean-room on purpose, so you can share *it* freely. When you share **your** crew:
-
-- **Strip the plumbing** — internal IPs/hostnames, topology, secret names and paths. Diagrams go out
-  with roles, not addresses.
-- **Guard the mission** — share *how* your crew coordinates; keep *what* it works on and *why* to
-  yourself if that's your edge.
-- **Gate it** — a sanitize + adversarial-review pass over the whole set, in context, before anything
-  goes public. A detail harmless in one file can be identifying across three.
+  humans or agents. If you share your own config, note the real crew/infra lives in the git-ignored
+  `fleet.local.json` / `personas.local/`, so it stays out of the repo. And before you publish your own
+  crew's config or diagrams, strip real IPs/hostnames/secret paths first — a detail harmless in one
+  file can be identifying across several.
 
 ---
-*This is the threat model of the kit itself. If you fork FleetChat, keep this file honest about what
-your version does and does not protect — an out-of-date threat model is worse than none.*
+*If you fork FleetChat, keep this file honest about what your version does and doesn't protect.*

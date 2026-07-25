@@ -10,7 +10,7 @@ import (
 func TestBuildCLICommand(t *testing.T) {
 	// claude -- explicit, default (""), and case/space-insensitive -- fully wired.
 	for _, cli := range []string{"claude", "", "  Claude "} {
-		bin, args, err := buildCLICommand(AgentOptions{CLI: cli, Persona: "p", Folder: "f"})
+		bin, args, err := buildCLICommand(AgentOptions{CLI: cli, Folder: "f"})
 		if err != nil {
 			t.Fatalf("cli %q should build, got err %v", cli, err)
 		}
@@ -18,7 +18,7 @@ func TestBuildCLICommand(t *testing.T) {
 			t.Fatalf("cli %q: empty binary", cli)
 		}
 		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "--input-format=stream-json") || !strings.Contains(joined, "--system-prompt") {
+		if !strings.Contains(joined, "--input-format=stream-json") {
 			t.Fatalf("cli %q: claude args missing: %v", cli, args)
 		}
 	}

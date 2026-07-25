@@ -111,9 +111,8 @@ type Agent struct {
 // its own flags (see buildCLICommand) -- a real Gemini/Qwen adapter emits its
 // own, not an assumption that --model/--system-prompt are universal.
 type AgentOptions struct {
-	Model   string // "" = whatever the CLI's own default is
-	Persona string // "" = the CLI's own default persona; replaced wholesale
-	Folder  string // "" = no home folder; otherwise the agent's cwd (its own repo) + --add-dir
+	Model  string // "" = whatever the CLI's own default is
+	Folder string // "" = no home folder; otherwise the agent's cwd (its own repo) + --add-dir
 	// CLI picks which backend launches this agent: "claude" (default when "") |
 	// "gemini" | "qwen". Per-agent, so the board can run different CLIs in
 	// different folders. Read from the git-ignored persona config. Only the claude
@@ -179,9 +178,6 @@ func claudeCommand(opts AgentOptions) (bin string, args []string) {
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
-	}
-	if opts.Persona != "" {
-		args = append(args, "--system-prompt", opts.Persona)
 	}
 	if opts.Folder != "" {
 		args = append(args, "--add-dir", opts.Folder)

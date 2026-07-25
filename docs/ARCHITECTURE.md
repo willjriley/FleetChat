@@ -45,8 +45,10 @@ One Go binary; `main.go` wires the rest together.
   agent into the same directory's most-recent session).
 - **`security.go`** — the global CSRF / DNS-rebinding middleware wrapping the whole mux (see
   `SECURITY.md`).
-- **`personas.go`** — loads `personas.local/<id>/` (or `personas/<id>/`): `agent.json` (identity) +
-  `PERSONA.md` (system prompt).
+- **`personas.go`** — loads each agent's **run config** from `personas.local/<id>/` (or
+  `personas/<id>/`) `agent.json` (home dir + CLI + roster name/role). An agent's
+  **identity is its own home-repo `CLAUDE.md`** — the CLI reads it because the process
+  runs from that folder (`cmd.Dir`); FleetChat injects no persona/system-prompt.
 - **`registry.go`** — the single map of which agents exist and are alive.
 - **`tray.go`** / **`lifecycle.go`** — the system-tray icon and the start/stoppable `boardServer`,
   so "shut down board" stops serving without quitting the tray app.
