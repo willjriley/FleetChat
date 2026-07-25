@@ -5,28 +5,9 @@ import (
 	"testing"
 )
 
-// TestTeachOnceFlag verifies the teach-once gate: a fresh agent needs teaching,
-// MarkTaught flips it off, and MarkTaught is idempotent (so the benign
-// double-teach race -- two turns both seeing NeedsTeaching before either marks
-// -- can never leave the agent in a bad state). Uses a zero-value Agent because
-// NeedsTeaching/MarkTaught touch only a.mu (zero-ready) and a.taught.
-func TestTeachOnceFlag(t *testing.T) {
-	a := &Agent{}
-	if !a.NeedsTeaching() {
-		t.Fatal("a fresh agent must need teaching")
-	}
-	a.MarkTaught()
-	if a.NeedsTeaching() {
-		t.Fatal("after MarkTaught, an agent must NOT need teaching")
-	}
-	a.MarkTaught() // idempotent
-	if a.NeedsTeaching() {
-		t.Fatal("MarkTaught must be idempotent -- still taught")
-	}
-}
-
 // TestMessageEnvelope pins the per-turn envelope format: real, board-attested
-// sender attribution and nothing else (the rules are taught separately, once).
+// sender attribution and nothing else (the rules are delivered separately, at
+// launch, as an appended system prompt).
 func TestMessageEnvelope(t *testing.T) {
 	if got, want := messageEnvelope("will", "hello"), "New message from will: hello"; got != want {
 		t.Errorf("messageEnvelope = %q, want %q", got, want)
