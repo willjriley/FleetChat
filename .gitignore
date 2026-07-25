@@ -7,10 +7,11 @@ data/
 config.json
 .env
 
-# your real fleet + personas -- may name real people/infra, so NEVER commit them.
-# Only fleet.local.example.json (a template) is tracked. Resolver: fleetFile()/personaBaseDirs() in daemon/.
+# your real declared crew -- may name real people/infra, so NEVER commit it. Only
+# fleet.local.example.json (a template) is tracked. See fleetFile() in daemon/.
+# (An agent's run config -- home folder + CLI -- lives in data/roster.json, already
+# ignored above via data/.)
 fleet.local.json
-personas.local/
 
 # Python
 __pycache__/

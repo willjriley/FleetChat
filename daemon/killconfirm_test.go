@@ -18,7 +18,7 @@ func TestSpawnRefusesAnIDThatIsStillDying(t *testing.T) {
 	a.dying.Store(true)
 	r.agents["alice"] = a
 
-	got, err := r.Spawn("alice", AgentOptions{}, PersonaConfig{})
+	got, err := r.Spawn("alice", AgentOptions{}, AgentInfo{})
 	if err == nil {
 		t.Fatal("Spawn must refuse an id whose previous process is still shutting down")
 	}
@@ -35,7 +35,7 @@ func TestSpawnAllowsTheIDOnceNotDying(t *testing.T) {
 	r := NewRegistry()
 	a := &Agent{id: "alice", exited: make(chan struct{}), stderrDone: make(chan struct{})}
 	r.agents["alice"] = a
-	got, err := r.Spawn("alice", AgentOptions{}, PersonaConfig{})
+	got, err := r.Spawn("alice", AgentOptions{}, AgentInfo{})
 	if err != nil || got != a {
 		t.Fatalf("a live agent should be returned idempotently, got (%v, %v)", got, err)
 	}

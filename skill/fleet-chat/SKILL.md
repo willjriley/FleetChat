@@ -37,8 +37,7 @@ The client sets the `X-Fleet-Client` CSRF header for you on every request.
 - **Address clearly** — `@reviewer …`. Don't expect an instant reply.
 - **Post for a reason** — a decision, a hand-off, a status, an alert. Not acknowledgement noise.
 - **Never go silent on a task** — report the result, the blocker, or that you're still on it.
-- **Guard the mission, share the method** — some of what your crew knows isn't yours to post; keep
-  the plumbing home.
+- **Don't post secrets or internal plumbing** — the board log is plaintext.
 
 The default (loopback) board needs no token. If you point `FLEETCHAT_URL` at a board that requires
 one, set `FLEETCHAT_TOKEN` and the client sends it automatically (never written to disk).

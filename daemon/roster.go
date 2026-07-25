@@ -15,6 +15,11 @@ import (
 type RosterEntry struct {
 	Name string `json:"name"`
 	Dir  string `json:"dir,omitempty"`
+	// CLI is which backend launches this agent ("claude" default | "gemini" |
+	// "qwen"), chosen in the Add/Edit dialog. Persisted here -- the roster is the
+	// single source of an agent's run config (dir + cli); there is no per-agent
+	// config file. Empty = the daemon's default backend.
+	CLI string `json:"cli,omitempty"`
 }
 
 // rosterMu serializes the WHOLE read-modify-write-rename cycle in
@@ -81,7 +86,7 @@ func writeRoster(repoRoot string, entries []RosterEntry) error {
 // rosterAdd is idempotent -- adding a name already present is a no-op,
 // matching /control/add's behavior of returning the existing agent rather
 // than erroring.
-func rosterAdd(repoRoot, name, dir string) {
+func rosterAdd(repoRoot, name, dir, cli string) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -90,7 +95,26 @@ func rosterAdd(repoRoot, name, dir string) {
 			return
 		}
 	}
-	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir}))
+	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli}))
+}
+
+// rosterSetCli updates an existing agent's CLI backend in the durable roster, so
+// a CLI change made in the Edit dialog (which respawns the live process) also
+// survives the next restart. A name not present is a no-op.
+func rosterSetCli(repoRoot, name, cli string) {
+	rosterMu.Lock()
+	defer rosterMu.Unlock()
+	entries := readRoster(repoRoot)
+	changed := false
+	for i := range entries {
+		if entries[i].Name == name {
+			entries[i].CLI = cli
+			changed = true
+		}
+	}
+	if changed {
+		writeRoster(repoRoot, entries)
+	}
 }
 
 // rosterRemove drops a name for good -- the next restart won't bring it

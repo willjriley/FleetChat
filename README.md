@@ -1,6 +1,6 @@
 # FleetChat
 
-A small, local, clone-and-run sandbox for AI-agent orchestration: a few `claude` agents and you, coordinating on one shared board. It's a starter kit, not a product. It ships as a **blank slate** — no personas, no bundled crew, an empty board you add your own agents to.
+A small, local, clone-and-run sandbox for AI-agent orchestration: a few `claude` agents and you, coordinating on one shared board. It's a starter kit, not a product. It ships as a **blank slate** — no bundled crew, an empty board you add your own agents to.
 
 ```
 git clone <this repo>
@@ -17,7 +17,7 @@ First run opens the UI to an empty board. Click **+ Add agent**, point it at a p
 - **`server/web/`** — the web UI: the board, a task board, and a private per-agent terminal view.
 - **`skill/fleet-chat/`** — `fleetchat.py`, a standalone HTTP client for reading/posting to a board from any script (not used by the daemon's own crew).
 - **`agents/speaker.py`** + **`scripts/download_voices.py`** — the optional server-side voice speaker and its one-time model downloader.
-- **`docs/`** — the pattern (`ARCHITECTURE.md`), operating principles (`PRINCIPLES.md`), threat model (`SECURITY.md`).
+- **`docs/`** — `ARCHITECTURE.md` (how it's built) and `SECURITY.md` (threat model).
 - **`data/roster.json`** — your saved lineup (git-ignored). Empty on a fresh clone; agents you add persist here and return on the next launch.
 
 ## Adding agents
@@ -27,7 +27,7 @@ First run opens the UI to an empty board. Click **+ Add agent**, point it at a p
 - a **CLI picker** — `claude` is wired up; `gemini` and `qwen` are selectable but their adapters aren't built yet;
 - a **voice picker** — only if server voices are installed (see *Voices*).
 
-Added agents persist to `data/roster.json`. Double-click a name to **edit** it (change its CLI or voice) or **remove** it. To give a name a defined role, drop a `personas/<name>/` (`agent.json` + `PERSONA.md`). To declare a whole crew up front, drop a git-ignored `fleet.local.json` + `personas.local/` (copy `fleet.local.example.json` to start), or point `$FLEETCHAT_PERSONAS_DIR` outside the repo.
+Added agents persist to `data/roster.json` — each agent's home folder and CLI, set right there in the dialog. Double-click a name to **edit** it (folder, CLI, or voice) or **remove** it. An agent's identity is its home folder's own `CLAUDE.md`; FleetChat injects nothing on top. To declare a crew up front, drop a git-ignored `fleet.local.json` (crew names + an optional routing `lead`; copy `fleet.local.example.json` to start), then set each one's folder in the Edit dialog.
 
 ## Addressing & memory
 
@@ -65,15 +65,6 @@ A young sandbox; the backend was rewritten from Python to Go on 2026-07-19 (the 
 - **No `--demo` / CLI flags.** The board always runs on `127.0.0.1:8137` with agents replying for real; there's no scripted showcase.
 - **Per-agent last-turn status** (`/control/status`) is unpopulated.
 
-## The rules every agent is told at runtime
-
-Injected into every agent — a protocol, not a crew:
-
-1. **Nobody solos.** A hard-to-reverse step gets a second agent's look before it's treated as done.
-2. **Refute before acting.** One agent can ask another to check a risky claim.
-3. **A human approves the irreversible step.** Agents treat a security role's sign-off as a gate — a prompted convention, not a lock the code enforces (see `docs/SECURITY.md`).
-4. **Share the method, guard the mission.** What generalizes is safe to share; what points at your systems stays home.
-
 ---
 
-*A starter kit built to show the pattern — not anyone's live infrastructure.*
+*A small clone-and-run demo — not anyone's live infrastructure.*

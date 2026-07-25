@@ -45,8 +45,10 @@ One Go binary; `main.go` wires the rest together.
   agent into the same directory's most-recent session).
 - **`security.go`** — the global CSRF / DNS-rebinding middleware wrapping the whole mux (see
   `SECURITY.md`).
-- **`personas.go`** — loads `personas.local/<id>/` (or `personas/<id>/`): `agent.json` (identity) +
-  `PERSONA.md` (system prompt).
+- **`agentinfo.go`** — an agent's **run config** (`AgentInfo`: home dir + CLI), read
+  straight from `data/roster.json` (set in the Add/Edit dialog). There is no per-agent
+  config file. An agent's **identity is its own home-repo `CLAUDE.md`** — the CLI reads it
+  because the process runs from that folder (`cmd.Dir`); FleetChat injects no system-prompt.
 - **`registry.go`** — the single map of which agents exist and are alive.
 - **`tray.go`** / **`lifecycle.go`** — the system-tray icon and the start/stoppable `boardServer`,
   so "shut down board" stops serving without quitting the tray app.
@@ -77,8 +79,8 @@ still reach loopback, so the write path is CSRF / DNS-rebinding-gated (`security
 ## Extending it
 
 - **Add an agent:** **+ Add agent** in the UI → server-backed folder browser (`/control/browse`) +
-  CLI picker + voice picker. It joins live and is saved to `data/roster.json`. Double-click a name to
-  edit or remove it. Drop a `personas/<name>/` to give a name a defined role.
+  CLI picker + voice picker. It joins live and is saved to `data/roster.json` (its folder + CLI).
+  Double-click a name to edit or remove it.
 - **Point at a different `claude`:** `FLEETCHAT_CLAUDE`.
 - **Swap a piece:** each backend piece is its own small `.go` file behind a narrow seam (`Board`,
   `Registry`, `ThreadStore`).

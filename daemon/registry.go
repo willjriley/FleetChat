@@ -127,7 +127,7 @@ func (r *Registry) TypingNow() []string {
 	return out
 }
 
-func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*Agent, error) {
+func (r *Registry) Spawn(id string, opts AgentOptions, info AgentInfo) (*Agent, error) {
 	if !validID.MatchString(id) {
 		return nil, fmt.Errorf("bad agent id %q: must match %s", id, validID.String())
 	}
@@ -158,7 +158,7 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 	if err != nil {
 		return nil, err
 	}
-	a.persona = persona
+	a.info = info
 	// Persist the live session id so the NEXT spawn of this id can resume it.
 	// Fires from readLoop's goroutine on system/init, so it must not touch r.mu
 	// -- saveSession has its own file lock.
@@ -211,9 +211,9 @@ func (r *Registry) Spawn(id string, opts AgentOptions, persona PersonaConfig) (*
 					log.Printf("[agent %s] resume of session %s never initialised -- forgotten; respawning fresh", id, attemptedResume)
 					fresh := a.opts
 					fresh.ResumeSession = "" // forgetSession already ran, so Spawn's own lookup also finds nothing: truly fresh, and fresh can't re-enter this branch (no loop)
-					persona := a.persona
+					info := a.info
 					go func() {
-						if _, err := r.Spawn(id, fresh, persona); err != nil {
+						if _, err := r.Spawn(id, fresh, info); err != nil {
 							log.Printf("[agent %s] fresh respawn after failed resume errored: %s", id, err)
 						}
 					}()
@@ -282,7 +282,7 @@ func (r *Registry) All() []*Agent {
 }
 
 // RestartAll kills and respawns every currently-registered agent with its
-// SAME model/persona/folder. Used by both the tray's "Restart all agents"
+// SAME model/config/folder. Used by both the tray's "Restart all agents"
 // menu action and POST /control/restart -- ONE implementation of "flush the
 // whole crew," not two that could quietly disagree the way tonight's real
 // orphaned-process bug started (two separate code paths, two separate
@@ -290,7 +290,7 @@ func (r *Registry) All() []*Agent {
 func (r *Registry) RestartAll() int {
 	n := 0
 	for _, a := range r.All() {
-		id, opts, persona := a.id, a.opts, a.persona
+		id, opts, info := a.id, a.opts, a.info
 		// Re-read the freshest session from disk on respawn rather than reusing
 		// this process's boot-time id (a.opts is frozen at spawn; route() updates
 		// a.sessionID, never a.opts). Clearing it makes Spawn do the sessions.json
@@ -300,7 +300,7 @@ func (r *Registry) RestartAll() int {
 		if err := r.Kill(id); err != nil {
 			continue
 		}
-		if _, err := r.Spawn(id, opts, persona); err == nil {
+		if _, err := r.Spawn(id, opts, info); err == nil {
 			n++
 		}
 	}

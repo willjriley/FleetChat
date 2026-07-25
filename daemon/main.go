@@ -22,7 +22,7 @@ import (
 )
 
 // The real FleetChat daemon: same repo, same server/web/ frontend
-// (unmodified), same fleet.local.json/personas.local/ as the Python board --
+// (unmodified), same fleet.local.json + data/roster.json as the Python board --
 // this IS "our fleet," running on the new plumbing, not a separate thing.
 // Runs on the SAME port the Python board used (8137) -- this REPLACES it in
 // place, not a parallel copy on a different port. The tray icon IS the
@@ -146,9 +146,9 @@ func main() {
 		for _, a := range reg.All() {
 			cli := a.opts.CLI
 			if cli == "" {
-				cli = "claude" // the default backend when a persona doesn't set one
+				cli = "claude" // the default backend when the roster doesn't set one
 			}
-			out = append(out, rosterEntry{ID: a.id, Name: a.persona.Name, Role: a.persona.Role, CLI: cli, Dir: a.opts.Folder})
+			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder})
 		}
 		// reg.All() walks a Go map -- deliberately randomized iteration order by
 		// language design -- so without this sort the sidebar reshuffles on every
@@ -342,28 +342,27 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"error": "'" + name + "' is a reserved name (system/broadcast identity) -- pick a different folder"})
 			return
 		}
-		persona, personaText := loadPersona(repoRoot, name)
-		cli := persona.CLI
-		if body.CLI != "" {
-			cli = body.CLI // the operator's explicit pick in the Add-agent dialog wins over the persona default
+		cli := body.CLI
+		if cli == "" {
+			cli = "claude" // the default backend; the operator's pick in the Add-agent dialog wins
 		}
-		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, Persona: personaText, CLI: cli}, persona)
+		ai := AgentInfo{Name: name, ID: name, Dir: body.Folder, CLI: cli}
+		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, CLI: cli}, ai)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		rosterAdd(repoRoot, a.id, body.Folder)
-		announceJoin(board, a.id, persona)
+		rosterAdd(repoRoot, a.id, body.Folder, cli)
+		announceJoin(board, a.id)
 		log.Printf("[daemon] added agent %q from folder %s", a.id, body.Folder)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "added": a.id})
 	})
 
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Persona string `json:"persona"`
+			ID    string `json:"id"`
+			Model string `json:"model"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -373,17 +372,15 @@ func main() {
 			http.Error(w, "'"+body.ID+"' is a reserved name (system/broadcast identity)", http.StatusBadRequest)
 			return
 		}
-		if !personaIDRe.MatchString(body.ID) {
-			// SECURITY (§6 path-traversal): reject a malformed id up front so it can't drive
-			// the persona-file lookup into a path traversal; loadPersona guards again.
+		if !validID.MatchString(body.ID) {
+			// Reject a malformed id up front (a nicer error than Spawn's own). No id
+			// ever drives a filesystem path now -- run config comes from the roster,
+			// not a per-id file -- so this is just charset validation.
 			http.Error(w, "id must be lowercase letters, digits, '-' or '_' (no path separators)", http.StatusBadRequest)
 			return
 		}
-		persona, personaText := loadPersona(repoRoot, body.ID)
-		if body.Persona != "" {
-			personaText = body.Persona // explicit override wins over the on-disk persona file
-		}
-		a, err := reg.Spawn(body.ID, AgentOptions{Model: body.Model, Persona: personaText}, persona)
+		info := agentInfo(repoRoot, body.ID)
+		a, err := reg.Spawn(body.ID, AgentOptions{Model: body.Model}, info)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -473,12 +470,13 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"error": "no such agent"})
 			return
 		}
-		id, opts, persona := a.id, a.opts, a.persona
+		id, opts, info := a.id, a.opts, a.info
 		if body.CLI != "" {
-			opts.CLI = body.CLI // change which CLI this agent runs; the respawn below applies it
+			opts.CLI = body.CLI                  // change which CLI this agent runs; the respawn below applies it
+			rosterSetCli(repoRoot, id, body.CLI) // ...and persist it so the change survives a restart
 		}
 		reg.Kill(id)
-		na, err := reg.Spawn(id, opts, persona)
+		na, err := reg.Spawn(id, opts, info)
 		if err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -799,19 +797,20 @@ func main() {
 	runTray(bs, reg)
 }
 
-// announceJoin mirrors run_agent.py's own startup post exactly: intro text
-// (from the persona's "intro" field, defaulting the same way loadPersona
-// already does), tagged "join". Without this the board looks dead on load
-// (no sign any of the 5 real agents are alive) and the @-mention
-// autocomplete stays empty (it's seeded from "join"-tagged senders).
-func announceJoin(board *Board, id string, persona PersonaConfig) {
-	board.Post(id, persona.Intro, []string{"join"}, nil)
+// announceJoin posts a short join line AS the agent -- just its folder name.
+// An agent has no injected role or intro; its identity is its own repo. Tagged
+// "join": without it the board looks dead on load (no sign the agents are
+// alive) and the @-mention autocomplete stays empty (it's seeded from
+// "join"-tagged senders).
+func announceJoin(board *Board, id string) {
+	board.Post(id, capitalize(id), []string{"join"}, nil)
 }
 
-// bootstrapFleet auto-spawns the REAL configured lineup (data/roster.json,
-// the same durable "who's on the team" file run.py itself reads) with their
-// REAL personas -- so starting this daemon reproduces the actual crew, not
-// an empty board someone has to manually repopulate.
+// bootstrapFleet auto-spawns the configured lineup from data/roster.json (the
+// durable "who's on the team" list) -- each agent in its own home folder on its
+// own CLI, so starting this daemon reproduces the actual crew, not an empty
+// board someone has to manually repopulate. Identity comes from each agent's
+// own repo CLAUDE.md; the roster only says where + how to launch it.
 func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 	entries := readRoster(repoRoot)
 	if entries == nil {
@@ -828,25 +827,20 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 		return
 	}
 	for _, e := range entries {
-		persona, personaText := loadPersona(repoRoot, e.Name)
-		// Where this agent runs FROM (its cwd). A roster entry's own dir (set via
-		// the UI folder-picker) wins; otherwise the persona's configured home repo
-		// (personas.local/<id>/agent.json "dir"). This is what lands a bootstrapped
-		// specialist inside its own repo instead of the daemon dir.
-		folder := e.Dir
-		if folder == "" {
-			folder = persona.Dir
-		}
-		a, err := reg.Spawn(e.Name, AgentOptions{Persona: personaText, Folder: folder, CLI: persona.CLI}, persona)
+		// The roster is the single source of an agent's run config: its home folder
+		// (its cwd -- where its OWN CLAUDE.md defines it) and its CLI backend, both
+		// set in the Add/Edit dialog. No per-agent config file, no injected identity.
+		info := AgentInfo{Name: e.Name, ID: e.Name, Dir: e.Dir, CLI: e.CLI}
+		a, err := reg.Spawn(e.Name, AgentOptions{Folder: e.Dir, CLI: e.CLI}, info)
 		if err != nil {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue
 		}
-		announceJoin(board, a.id, persona)
-		if folder != "" {
-			log.Printf("[daemon] bootstrapped %q from the real roster -- running in its own folder %q", e.Name, folder)
+		announceJoin(board, a.id)
+		if e.Dir != "" {
+			log.Printf("[daemon] bootstrapped %q from the roster -- running in its own folder %q", e.Name, e.Dir)
 		} else {
-			log.Printf("[daemon] bootstrapped %q from the real roster (no home folder -- daemon cwd)", e.Name)
+			log.Printf("[daemon] bootstrapped %q from the roster (no home folder -- daemon cwd)", e.Name)
 		}
 	}
 }
