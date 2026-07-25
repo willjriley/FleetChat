@@ -97,13 +97,6 @@ type Agent struct {
 	// versa (leaking a private reply onto the board) -- the exact bug the operator
 	// reported, that a single isolated test could never catch.
 	pendingPrivate []bool
-	// taught records whether this agent has already been taught the board rules.
-	// The board prepends the full ruleset to an agent's turn only while this is
-	// false (then sets it), so a persistent agent -- whose context carries the
-	// rules across turns -- is taught ONCE, not on every message. Rules never
-	// change under a running agent: a rules change means restarting the board,
-	// which makes fresh agents that get taught anew. Guarded by a.mu.
-	taught bool
 }
 
 // AgentOptions carries a single agent's launch config. Model/Folder are
@@ -159,6 +152,11 @@ func buildCLICommand(opts AgentOptions) (bin string, args []string, err error) {
 		bin, args = claudeCommand(opts)
 		return bin, args, nil
 	case "gemini", "qwen":
+		// INVARIANT when you wire these: every managed agent MUST receive protocolRules()
+		// via this backend's own system-prompt equivalent (claude uses --append-system-prompt
+		// in claudeCommand). Skip it and a managed agent on this CLI runs with NO board trust
+		// boundary. Also re-verify that equivalent flag does NOT persist into the saved session
+		// (claude's doesn't -- verified) or the standalone-session taint isolation breaks.
 		return "", nil, fmt.Errorf("cli %q is a recognized backend but its adapter (args + output stream) isn't wired yet -- only claude is implemented today", cli)
 	default:
 		return "", nil, fmt.Errorf("unknown cli %q (want one of: claude, gemini, qwen)", cli)
@@ -182,6 +180,13 @@ func claudeCommand(opts AgentOptions) (bin string, args []string) {
 	if opts.Folder != "" {
 		args = append(args, "--add-dir", opts.Folder)
 	}
+	// Deliver the board rulebook as an appended system prompt at LAUNCH, not as a
+	// conversation message. Supplied fresh on every daemon launch, it never enters
+	// the agent's saved session -- so a hand-launched or resumed `claude` in this repo
+	// has no board rules to act on (no "taint"). This is board PROTOCOL (how to drive
+	// the board API), NOT an identity/persona: the agent's identity stays its own
+	// home-repo CLAUDE.md, with nothing layered over it.
+	args = append(args, "--append-system-prompt", protocolRules())
 	// Resume THIS agent's own prior conversation. Validated before use because it
 	// reaches the child as an argv element and the file it came from is
 	// hand-editable; an id that fails the shape check is dropped and the agent
@@ -228,6 +233,13 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	// is read at fork time). Validated in agentWorkDir so a bad path can't fail
 	// the spawn.
 	cmd.Dir = agentWorkDir(id, opts.Folder)
+	// Board-managed signal: mark this as a process the FleetChat daemon launched, so
+	// the agent can tell "I'm the live board instance" from "someone ran `claude` by
+	// hand in this repo." A hand-launch never carries these; the board rules gate on
+	// FLEETCHAT_MANAGED so a stray or manually-resumed session stands down instead of
+	// posting into a board nobody is driving. Set before Start (like cmd.Dir, the
+	// environment is captured at fork time).
+	cmd.Env = append(os.Environ(), "FLEETCHAT_MANAGED=1", "FLEETCHAT_AGENT="+id)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdin pipe: %w", err)
@@ -535,25 +547,6 @@ func (a *Agent) clearTyping() {
 	if a.onTyping != nil {
 		a.onTyping(a.id, false)
 	}
-}
-
-// NeedsTeaching reports whether this agent has NOT yet been taught the board
-// rules. The board prepends the full ruleset to an agent's turn only when this
-// is true, then calls MarkTaught -- so a persistent agent (whose context
-// carries the rules forward) is taught once, not every message.
-func (a *Agent) NeedsTeaching() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return !a.taught
-}
-
-// MarkTaught records that this agent has now been taught the board rules. A
-// rare double-teach (two turns to one agent both seeing NeedsTeaching before
-// either marks) is harmless -- it just re-sends the rules once more.
-func (a *Agent) MarkTaught() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.taught = true
 }
 
 // Subscribe replays the buffered backlog to v BEFORE registering it for live

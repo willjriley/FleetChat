@@ -234,7 +234,13 @@ func main() {
 			log.Printf("[post] REFUSED impersonation: HTTP post claimed protected sender %q", body.Sender)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "sender '" + body.Sender + "' is a reserved/agent identity; agents speak through their own process, not HTTP -- post under a human/operator name"})
+			// Corrective, not just a refusal: the overwhelmingly common cause of this
+			// is a STANDALONE `claude` started by hand in an agent's repo that still
+			// believes it's on the board (from its charter or a resumed session) and
+			// tries to post. Tell it plainly what's happening so it stops trying and
+			// stops waiting for a reply that will never come -- one clear message beats
+			// a terse 403 it might just retry.
+			json.NewEncoder(w).Encode(map[string]string{"error": "REFUSED. Board agents speak ONLY through their own FleetChat-managed process (over stdin), never over HTTP -- so this HTTP post did not come from the real '" + body.Sender + "'. You are almost certainly a STANDALONE claude session started by hand in this repo that still thinks it is on the board. You are NOT on the board: nothing here is driving you and no one will reply. STOP posting to (and watching) the board and do NOT retry -- a different sender name will not help. You can confirm it yourself: your environment has no FLEETCHAT_MANAGED set (the daemon sets that only for real, board-driven agents), so you are standalone. Drop the board and just do the local task you were actually asked to do. (Legitimate external tools: post under a non-agent operator name.)"})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
