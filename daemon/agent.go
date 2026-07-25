@@ -97,6 +97,19 @@ type Agent struct {
 	// versa (leaking a private reply onto the board) -- the exact bug the operator
 	// reported, that a single isolated test could never catch.
 	pendingPrivate []bool
+	// sendCh decouples "hand a turn to this agent" from the actual stdin WRITE.
+	// sendPrompt enqueues here (non-blocking); the agent's own sendLoop drains it
+	// and does the write. This is what stops a wedged recipient -- one not draining
+	// its stdin -- from blocking the CALLER, which for a board reply is the SENDER's
+	// readLoop: the head-of-line stall that once froze a sender's turn AND hung
+	// shutdown. A stuck recipient now backs up only its own buffered queue.
+	sendCh chan sendJob
+}
+
+// sendJob is one queued turn awaiting the agent's stdin (see sendCh / sendLoop).
+type sendJob struct {
+	text    string
+	private bool
 }
 
 // AgentOptions carries a single agent's launch config. Model/Folder are
@@ -117,6 +130,12 @@ type AgentOptions struct {
 	// construction -- see sessions.go for why the --continue flag cannot be
 	// used here without agents inheriting each other's conversations.
 	ResumeSession string
+	// FullPermissions runs this agent with the approval gate OFF (claude
+	// --dangerously-skip-permissions): it can act on ANY path and run ANY command
+	// without per-action approval, not just its --add-dir folder. A per-agent OPT-IN
+	// (the "full permissions" checkbox in Add/Edit) -- the fleet's purpose is agents
+	// that DO the work, but unrestricted power stays a deliberate choice, not default.
+	FullPermissions bool
 }
 
 // agentWorkDir resolves the cwd an agent should run in: its own project folder
@@ -151,13 +170,15 @@ func buildCLICommand(opts AgentOptions) (bin string, args []string, err error) {
 	case "", "claude":
 		bin, args = claudeCommand(opts)
 		return bin, args, nil
-	case "gemini", "qwen":
-		// INVARIANT when you wire these: every managed agent MUST receive protocolRules()
-		// via this backend's own system-prompt equivalent (claude uses --append-system-prompt
-		// in claudeCommand). Skip it and a managed agent on this CLI runs with NO board trust
-		// boundary. Also re-verify that equivalent flag does NOT persist into the saved session
-		// (claude's doesn't -- verified) or the standalone-session taint isolation breaks.
-		return "", nil, fmt.Errorf("cli %q is a recognized backend but its adapter (args + output stream) isn't wired yet -- only claude is implemented today", cli)
+	case "qwen":
+		return qwenCommand(opts)
+	case "gemini":
+		// INVARIANT when you wire this: every managed agent MUST receive protocolRules()
+		// via this backend's own system-prompt equivalent (claude uses --append-system-prompt;
+		// qwen prepends it inside the adapter). Skip it and a managed agent on this CLI runs with
+		// NO board trust boundary. Also re-verify that mechanism does NOT persist into a resumed
+		// session in a way that re-taints a standalone launch.
+		return "", nil, fmt.Errorf("cli %q is a recognized backend but its adapter isn't wired yet -- only claude and qwen are implemented today", cli)
 	default:
 		return "", nil, fmt.Errorf("unknown cli %q (want one of: claude, gemini, qwen)", cli)
 	}
@@ -180,6 +201,13 @@ func claudeCommand(opts AgentOptions) (bin string, args []string) {
 	if opts.Folder != "" {
 		args = append(args, "--add-dir", opts.Folder)
 	}
+	if opts.FullPermissions {
+		// Full-permission agent: drop claude's approval gate entirely, so it can act
+		// on ANY path and run ANY command, not just its --add-dir folder. Opt-in per
+		// agent via the Add/Edit "full permissions" checkbox -- the fleet's purpose is
+		// agents that DO the work, but unrestricted power stays a deliberate choice.
+		args = append(args, "--dangerously-skip-permissions")
+	}
 	// Deliver the board rulebook as an appended system prompt at LAUNCH, not as a
 	// conversation message. Supplied fresh on every daemon launch, it never enters
 	// the agent's saved session -- so a hand-launched or resumed `claude` in this repo
@@ -199,6 +227,32 @@ func claudeCommand(opts AgentOptions) (bin string, args []string) {
 		bin = env // matches run_agent.py's override -- a service/scheduled-task launch may not have "claude" on PATH
 	}
 	return bin, args
+}
+
+// qwenCommand launches THIS daemon binary in qwen-adapter mode as the agent's
+// held-open process. Qwen-Code is one-shot per -p (no held-open stdin protocol
+// like claude), so the adapter (qwen_adapter.go) does the spawn-per-turn calls and
+// speaks the daemon's stream-json contract -- keeping all qwen-specific logic out
+// of the daemon core. Model is deliberately unset (qwen uses its own default).
+func qwenCommand(opts AgentOptions) (bin string, args []string, err error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", nil, fmt.Errorf("qwen adapter: cannot resolve daemon executable: %w", err)
+	}
+	args = []string{"qwen-adapter"}
+	if opts.Folder != "" {
+		args = append(args, "--repo", opts.Folder)
+	}
+	if opts.ResumeSession != "" && validSessionID.MatchString(opts.ResumeSession) {
+		args = append(args, "--resume", opts.ResumeSession)
+	}
+	if qb := os.Getenv("FLEETCHAT_QWEN"); qb != "" {
+		args = append(args, "--qwen-bin", qb) // parity with FLEETCHAT_CLAUDE
+	}
+	if opts.FullPermissions {
+		args = append(args, "--full-perms") // adapter turns this into qwen's own approval-bypass flag
+	}
+	return exe, args, nil
 }
 
 // NewAgent starts the subprocess and builds the Agent, but deliberately does
@@ -265,6 +319,11 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 		buf:        newRingBuffer(ringBufferMaxBytes),
 		exited:     make(chan struct{}),
 		stderrDone: make(chan struct{}),
+		// Buffered so a recipient that's momentarily busy (mid-turn, not reading
+		// stdin) queues rather than back-pressuring the sender. A full queue means
+		// genuinely stuck -> sendPrompt reports it instead of blocking. 64 is far
+		// more than the handful of turns a healthy agent buffers during one reply.
+		sendCh: make(chan sendJob, 64),
 	}
 
 	// Was previously left nil (cmd.Stderr) and silently discarded -- a crash
@@ -288,11 +347,37 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 // already set -- see NewAgent's doc comment.
 func (a *Agent) Start(stdout io.Reader) {
 	go a.readLoop(stdout)
+	go a.sendLoop() // writes this agent's queued turns to stdin -- see sendCh
 }
 
 // readLoop is the whole point of this file: turn Claude's raw stream-json
 // lines into the daemon's normalized events, and broadcast each one.
 func (a *Agent) readLoop(stdout io.Reader) {
+	// Panic containment: everything downstream of route() (onMessage -> board.Post
+	// -> recipient enqueues, viewer sends, ...) runs on THIS goroutine. An
+	// uncontained panic there would unwind readLoop WITHOUT closing exited --
+	// stranding Kill (10s timeout) and, since the send-queue change, leaking this
+	// agent's sendLoop forever. Recover and still perform the ORDERLY reap
+	// (stderrDone -> Wait -> close); a bare `defer close(a.exited)` would be wrong,
+	// as exited means "dead AND reaped" (Spawn reuses the id on it). reaped guards
+	// the double-close if the panic strikes after the normal-path close below.
+	reaped := false
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		log.Printf("[agent %s] PANIC in read loop (contained): %v", a.id, r)
+		if !reaped {
+			<-a.stderrDone // returns immediately once the stderr scanner is done (closed channel)
+			_ = a.cmd.Wait()
+			close(a.exited)
+		}
+		a.clearTyping()
+		if a.onExit != nil {
+			a.onExit()
+		}
+	}()
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // long lines are normal here
 	for scanner.Scan() {
@@ -336,6 +421,7 @@ func (a *Agent) readLoop(stdout io.Reader) {
 	// exited (Kill) is guaranteed the process is really gone and its id is
 	// safe to reuse.
 	close(a.exited)
+	reaped = true // the panic-recovery defer above must not close it again
 
 	a.broadcast(NormalizedEvent{AgentID: a.id, Type: "removed", Detail: "process exited"})
 	a.clearTyping() // safety net: a crash mid-turn may never emit "result" at all
@@ -387,6 +473,13 @@ func (a *Agent) route(raw rawClaudeLine, rawLine string) {
 				// means private.
 				if a.onMessage != nil && !private && !isPass(c.Text) {
 					a.onMessage(a.id, c.Text)
+				} else if a.onMessage != nil && !private {
+					// A suppressed PASS is INVISIBLE on the board by design -- which once
+					// made a healthy agent look broken (it was PASS-ing a repeated request
+					// in ~2s while the operator saw pure silence). Log it so "agent never
+					// responds" is diagnosable from daemon.log in seconds, not by exhuming
+					// the CLI's session transcript.
+					log.Printf("[route] %q replied PASS (suppressed from the board)", a.id)
 				}
 			}
 		}
@@ -455,7 +548,52 @@ func (a *Agent) Interrupt() error {
 	return a.in.Flush()
 }
 
+// sendPrompt ENQUEUES a turn for this agent's own sendLoop to write; it does not
+// touch stdin itself. The enqueue is non-blocking by construction: a wedged
+// recipient (one not draining its stdin) can only fill its bounded sendCh, never
+// stall the caller -- which for a board reply is the SENDER's readLoop. A full
+// queue (recipient genuinely stuck) is reported so board.Post can log "not woken"
+// rather than the whole fan-out hanging. A gone process is likewise a clean error.
 func (a *Agent) sendPrompt(text string, private bool) error {
+	select {
+	case a.sendCh <- sendJob{text: text, private: private}:
+		return nil
+	case <-a.exited:
+		return fmt.Errorf("agent %q is gone", a.id)
+	default:
+		return fmt.Errorf("agent %q send queue full (%d) -- not draining stdin", a.id, cap(a.sendCh))
+	}
+}
+
+// sendLoop is the only writer of queued TURNS to this agent's stdin (Interrupt
+// also writes to a.in -- a control_request, never a turn -- and both hold a.mu for
+// their entire write+flush, which is the actual no-interleaving guarantee; any new
+// a.in write MUST take a.mu too). Draining the queue here, off the caller's
+// goroutine, is what turns a stuck recipient from a head-of-line stall (froze a
+// sender's turn, hung shutdown) into a purely local backlog. Because it exits on
+// `exited` (closed when the process is confirmed gone) rather than on a channel
+// close, there is no send-on-closed race with a concurrent sendPrompt, and no
+// goroutine leak: a Kill tree-kills the process, the in-flight write below errors
+// out, and this loop then sees `exited` and returns. One accepted edge: if an
+// enqueue and process-death race, a job can land in sendCh just as this loop exits
+// -- the turn is undeliverable either way (agent is gone); the only artifact is the
+// [route] log optimistically counting that agent as woken.
+func (a *Agent) sendLoop() {
+	for {
+		select {
+		case job := <-a.sendCh:
+			a.writeTurn(job.text, job.private)
+		case <-a.exited:
+			return
+		}
+	}
+}
+
+// writeTurn does the actual stdin write for ONE turn. ONLY sendLoop calls it, so the
+// pendingPrivate push stays in strict FIFO with the writes (the CLI resolves queued
+// turns in that same order). Errors are logged, not returned -- the caller already
+// moved on at enqueue; a failed write here just means the process is going away.
+func (a *Agent) writeTurn(text string, private bool) {
 	// Mirrors run_agent.py's `board.set_typing(id, True)` right before the claude call --
 	// set BEFORE the write below, not after, so the UI's "…" can never lag the real state.
 	if a.onTyping != nil {
@@ -472,7 +610,9 @@ func (a *Agent) sendPrompt(text string, private bool) error {
 	}
 	b, err := json.Marshal(msg)
 	if err != nil {
-		return err
+		a.clearTyping() // never actually reached (this struct always marshals) -- kept honest
+		log.Printf("[agent %s] marshal turn failed: %s", a.id, err)
+		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -482,19 +622,21 @@ func (a *Agent) sendPrompt(text string, private bool) error {
 	if _, err := a.in.Write(b); err != nil {
 		a.undoPendingPrivateLocked() // this turn never actually reached the process -- don't leave a phantom queue entry
 		a.clearTyping()
-		return err
+		log.Printf("[agent %s] stdin write failed (process gone?): %s", a.id, err)
+		return
 	}
 	if err := a.in.WriteByte('\n'); err != nil {
 		a.undoPendingPrivateLocked()
 		a.clearTyping()
-		return err
+		log.Printf("[agent %s] stdin write failed: %s", a.id, err)
+		return
 	}
 	if err := a.in.Flush(); err != nil {
 		a.undoPendingPrivateLocked()
 		a.clearTyping()
-		return err
+		log.Printf("[agent %s] stdin flush failed: %s", a.id, err)
+		return
 	}
-	return nil
 }
 
 // undoPendingPrivateLocked removes the entry sendPrompt just pushed, when the

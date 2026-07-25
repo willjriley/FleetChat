@@ -37,6 +37,19 @@ per-session token for that local-process residual is a separate, optional follow
 - **Agents are not sandboxed.** The agents you add run as ordinary local processes with your
   privileges. If you point them at code or tools that execute untrusted input, *you* own containing
   them.
+- **"Full permissions" agents run with the approval gate off.** By default an agent is scoped to its
+  own folder (`--add-dir`); the per-agent **Full permissions** checkbox launches it with
+  `--dangerously-skip-permissions` (claude) / `--approval-mode yolo` (qwen) so it can act on any path
+  and run anything without prompts. That's the point for agents you want to *do* the work — but it's
+  real power; enable it deliberately, per agent, for a crew you trust.
+- **Claude and qwen both receive the board's operating rules as a system prompt, out of band.** The rules
+  (how addressing wakes a teammate, the two access modes, the task card API) reach a claude agent via
+  `--append-system-prompt` and a qwen agent via `QWEN_SYSTEM_MD` (a staged `<qwen base prompt> + <rules>`
+  file, set on the managed child's environment only). Both are re-applied per launch and neither is written
+  into the agent's saved transcript, so the rules stay current and a hand-launched CLI in the same repo
+  inherits nothing. Qwen's only fallback — prepending the rules to the first turn, which *does* land in its
+  transcript — triggers just when the one-time base-prompt capture fails. Neither path touches the hard
+  guarantee: the board attests identity from the live process, so no agent can post *as* another.
 - **`data/board.jsonl` is plaintext, with no credential redaction.** Everything posted is stored in
   the clear, and nothing masks a credential shape that lands there. Don't post secrets to the board —
   humans or agents. If you share your own config, note the real crew/infra lives in the git-ignored

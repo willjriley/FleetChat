@@ -550,8 +550,18 @@
     });
     body.appendChild(clirow);
     var clinote=document.createElement("div"); clinote.className="set-note"; clinote.style.cssText="margin-top:6px;font-size:11px";
-    clinote.textContent="Claude is wired up today; Gemini and Qwen are selectable but their adapters aren't finished yet.";
+    clinote.textContent="Claude and Qwen are wired up; Gemini is selectable but its adapter isn't finished yet.";
     body.appendChild(clinote);
+
+    // --- Full permissions: run this agent with the approval gate OFF (do anything) ---
+    var fprow=document.createElement("div"); fprow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
+    var fpcb=document.createElement("input"); fpcb.type="checkbox"; fpcb.id="fp-cb"; fpcb.checked = editing && !!agent.full_perms;
+    var fplab=document.createElement("label"); fplab.setAttribute("for","fp-cb"); fplab.className="set-note"; fplab.style.cursor="pointer";
+    fplab.textContent="Full permissions — act on any path / run anything, no approval prompts";
+    fprow.appendChild(fpcb); fprow.appendChild(fplab); body.appendChild(fprow);
+    var fpnote=document.createElement("div"); fpnote.className="set-note"; fpnote.style.cssText="margin-top:6px;font-size:11px";
+    fpnote.textContent="Off = scoped to its own folder. On = full power (claude --dangerously-skip-permissions / qwen --approval-mode yolo). Takes effect on relaunch.";
+    body.appendChild(fpnote);
 
     // --- Model: the --model this agent's CLI uses on its next turn (control mode only) ---
     var mrow=document.createElement("div"); mrow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
@@ -651,9 +661,9 @@
         if(!minp.disabled && model!==mOrig){ // live model override (no restart); only if control mode let us edit it
           fetch("/control/model",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, model:model})}).catch(function(){});
         }
-        if(selectedCli !== (agent.cli||"claude")){
+        if(selectedCli !== (agent.cli||"claude") || fpcb.checked !== !!agent.full_perms){
           primary.disabled=true; primary.textContent="Relaunching…"; err.style.display="none";
-          fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, cli:selectedCli})})
+          fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, cli:selectedCli, full_perms:fpcb.checked})})
             .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
             .then(function(res){
               if(res.s===401){ close(); askToken(); return; }
@@ -666,7 +676,7 @@
         var f=(inp.value||"").trim();
         if(!f){ err.textContent="Pick or type a folder first."; err.style.display=""; return; }
         primary.disabled=true; primary.textContent="Adding…"; err.style.display="none";
-        fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli})})
+        fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli, full_perms:fpcb.checked})})
           .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
           .then(function(res){
             if(res.s===401){ close(); askToken(); return; }
@@ -824,11 +834,10 @@
 
   // ---------- @-mention (wakes) + #-reference (doesn't) chips + "you were tagged" row highlight ----------
   // After a message renders, wrap @name/#name tokens in its TEXT (never code/pre/links) in a small
-  // pill. @name is an ACTIVE tag (see routing.go's addressed() -- it's what actually wakes that
+  // pill. @name is an ACTIVE tag (see routing.go's mergeAtMentions() -- it's what actually wakes that
   // agent) and gets the colored, per-name-hued chip; #name is a passing REFERENCE with no routing
-  // effect at all (agents are told to use it -- protocolRules() in board.go -- whenever they mention
-  // another agent without actually needing them engaged) and gets a deliberately muted, undyed chip
-  // so the two read as visibly different at a glance, not just different by one character. A message
+  // effect at all (it isn't an @, so the daemon never wakes on it) and gets a deliberately muted,
+  // undyed chip so the two read as visibly different at a glance, not just different by one character. A message
   // that @-names YOU (the #who name) tints its whole row -- #-referencing you does NOT, since it's
   // not something that needs your attention either.
   var MENTION_RE=/(^|[\s(>])([@#])(all|[A-Za-z0-9_-]{2,32})\b/g;
@@ -1048,10 +1057,12 @@
     var sender=($("#who").value||"you").trim(), text=$("#text").value.trim();
     if(!text) return;
     if(handleSlash(text)){ return; }   // /clear, /help -> handled locally, not posted to the board
-    // STRUCTURED addressing: the recipient list is parseTargets() (the same @-chips shown above the
-    // composer), sent as `to`. The server routes by this field, never by scanning the text -- so an
-    // @name typed in prose is display-only. The UI now REQUIRES an explicit target (below) so a
-    // message can't be fired at the whole crew by accident; the server still accepts an empty `to`.
+    // ADDRESSING: the recipient list is parseTargets() (the same @-chips shown above the composer),
+    // sent as `to`. The server ALSO scans the posted text for the same deliberate @names and merges
+    // them (routing.go mergeAtMentions, kept in lockstep with parseTargets' regex) -- so an @name
+    // wakes whether it arrived as a chip or typed in prose; a bare name never does. The UI still
+    // REQUIRES an explicit target (below) so a message can't be fired at the whole crew by accident;
+    // the server still accepts an empty `to` (an operator's plain message -> the whole crew).
     var to=parseTargets();
     if(!to.length){ needTarget(); return; }   // require an explicit @target -- no accidental broadcast
     $("#send").disabled=true;
@@ -1118,8 +1129,14 @@
   function parseTargets(){
     // Kept in lockstep with the display MENTION_RE (min 2 chars, same lead set incl '>') so what
     // renders as a chip is exactly what's SENT as a recipient -- otherwise "@x" would route with no
-    // visible chip, or ">@name" would show a chip but not route.
-    var re=/(^|[\s(>])@(all|[a-z0-9_-]{2,32})\b/gi, text=$("#text").value, seen={}, out=[], m;
+    // visible chip, or ">@name" would show a chip but not route. Mirrors the daemon's addressableText
+    // (routing.go): blank fenced/inline code and blockquote lines first, so a pasted diff/log or a
+    // quoted line doesn't silently add a recipient (the daemon excludes the same, so chips == wakes).
+    var text=$("#text").value
+      .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g," ")
+      .replace(/`[^`]*`/g," ")
+      .split("\n").map(function(l){ return /^\s*>/.test(l)?"":l; }).join("\n");
+    var re=/(^|[\s(>])@(all|[a-z0-9_-]{2,32})\b/gi, seen={}, out=[], m;
     while((m=re.exec(text))){ var n=m[2].toLowerCase(); if(!seen[n]){ seen[n]=1; out.push(n); } }
     return out;
   }

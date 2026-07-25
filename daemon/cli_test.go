@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// buildCLICommand is the multi-CLI seam: claude is fully wired, gemini/qwen are
-// recognized-but-not-yet-adapted (fail loudly), anything else is unknown.
+// buildCLICommand is the multi-CLI seam: claude and qwen are wired, gemini is
+// recognized-but-not-yet-adapted (fails loudly), anything else is unknown.
 func TestBuildCLICommand(t *testing.T) {
 	// claude -- explicit, default (""), and case/space-insensitive -- fully wired.
 	for _, cli := range []string{"claude", "", "  Claude "} {
@@ -23,9 +23,24 @@ func TestBuildCLICommand(t *testing.T) {
 		}
 	}
 
-	// gemini/qwen -- recognized backends, adapter not wired -> clear error, and
-	// NO partial command handed back (so NewAgent can't launch a broken process).
-	for _, cli := range []string{"gemini", "qwen", "QWEN"} {
+	// qwen -- wired via the self-exec adapter: builds a command that launches the
+	// daemon in qwen-adapter mode (case/space-insensitive).
+	for _, cli := range []string{"qwen", "QWEN", "  qwen "} {
+		bin, args, err := buildCLICommand(AgentOptions{CLI: cli, Folder: "f"})
+		if err != nil {
+			t.Fatalf("cli %q should build (qwen is wired), got err %v", cli, err)
+		}
+		if bin == "" {
+			t.Fatalf("cli %q: empty binary", cli)
+		}
+		if !strings.Contains(strings.Join(args, " "), "qwen-adapter") {
+			t.Fatalf("cli %q: qwen command missing adapter mode: %v", cli, args)
+		}
+	}
+
+	// gemini -- recognized backend, adapter not wired -> clear error, and NO partial
+	// command handed back (so NewAgent can't launch a broken process).
+	for _, cli := range []string{"gemini", "Gemini"} {
 		bin, args, err := buildCLICommand(AgentOptions{CLI: cli})
 		if err == nil {
 			t.Fatalf("cli %q must error until its adapter is wired", cli)

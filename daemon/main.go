@@ -40,6 +40,14 @@ var kokoroVoices = []string{
 }
 
 func main() {
+	// Qwen-adapter mode: the daemon re-execs ITSELF in this mode to serve as a qwen
+	// agent's held-open "process" (see qwenCommand). It bridges Qwen-Code's one-shot
+	// -p to the daemon's held-open stream-json contract, so no spawn-per-turn logic
+	// touches the daemon core. Must run before ANY daemon setup (no repoRoot, no board).
+	if len(os.Args) > 1 && os.Args[1] == "qwen-adapter" {
+		runQwenAdapter(os.Args[2:])
+		return
+	}
 	// Resolve the repo root and install the log tee FIRST -- BEFORE
 	// killOtherInstances -- so the single-instance / restart-handoff logs (the very
 	// diagnostics this tee exists to surface under `start /min`) land in
@@ -62,6 +70,12 @@ func main() {
 	} else {
 		log.Printf("[daemon] could not open data/daemon.log for tee-logging (%s) -- stderr only", ferr)
 	}
+
+	// Expose the data dir to spawned agents via the environment (they inherit
+	// os.Environ() -- see NewAgent's cmd.Env). The qwen adapter uses it to cache
+	// qwen's base system prompt and stage the per-launch <base>+<rules> file it
+	// points QWEN_SYSTEM_MD at (out-of-band rule delivery, never in the transcript).
+	os.Setenv("FLEETCHAT_DATA_DIR", filepath.Join(repoRoot, "data"))
 
 	// SINGLE-BOARD RULE, enforced by construction: a fresh start supersedes any
 	// prior instance rather than coexisting with it. Kill other copies of this
@@ -136,11 +150,12 @@ func main() {
 
 	mux.HandleFunc("/roster", func(w http.ResponseWriter, r *http.Request) {
 		type rosterEntry struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Role string `json:"role"`
-			CLI  string `json:"cli"`
-			Dir  string `json:"dir"` // the agent's home folder (its cwd), for the Edit dialog to show
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Role      string `json:"role"`
+			CLI       string `json:"cli"`
+			Dir       string `json:"dir"` // the agent's home folder (its cwd), for the Edit dialog to show
+			FullPerms bool   `json:"full_perms"`
 		}
 		out := make([]rosterEntry, 0)
 		for _, a := range reg.All() {
@@ -148,7 +163,7 @@ func main() {
 			if cli == "" {
 				cli = "claude" // the default backend when the roster doesn't set one
 			}
-			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder})
+			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder, FullPerms: a.opts.FullPermissions})
 		}
 		// reg.All() walks a Go map -- deliberately randomized iteration order by
 		// language design -- so without this sort the sidebar reshuffles on every
@@ -321,8 +336,9 @@ func main() {
 
 	mux.HandleFunc("/control/add", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Folder string `json:"folder"`
-			CLI    string `json:"cli"`
+			Folder    string `json:"folder"`
+			CLI       string `json:"cli"`
+			FullPerms bool   `json:"full_perms"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -353,13 +369,13 @@ func main() {
 			cli = "claude" // the default backend; the operator's pick in the Add-agent dialog wins
 		}
 		ai := AgentInfo{Name: name, ID: name, Dir: body.Folder, CLI: cli}
-		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, CLI: cli}, ai)
+		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, CLI: cli, FullPermissions: body.FullPerms}, ai)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		rosterAdd(repoRoot, a.id, body.Folder, cli)
+		rosterAdd(repoRoot, a.id, body.Folder, cli, body.FullPerms)
 		announceJoin(board, a.id)
 		log.Printf("[daemon] added agent %q from folder %s", a.id, body.Folder)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "added": a.id})
@@ -465,8 +481,9 @@ func main() {
 
 	mux.HandleFunc("/control/respawn", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Agent string `json:"agent"`
-			CLI   string `json:"cli"` // optional: relaunch this agent on a different backend (Edit dialog)
+			Agent     string `json:"agent"`
+			CLI       string `json:"cli"`        // optional: relaunch on a different backend (Edit dialog)
+			FullPerms *bool  `json:"full_perms"` // optional: toggle full-permission mode (nil = leave as-is)
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -478,8 +495,13 @@ func main() {
 		}
 		id, opts, info := a.id, a.opts, a.info
 		if body.CLI != "" {
-			opts.CLI = body.CLI                  // change which CLI this agent runs; the respawn below applies it
-			rosterSetCli(repoRoot, id, body.CLI) // ...and persist it so the change survives a restart
+			opts.CLI = body.CLI // change which CLI this agent runs; the respawn below applies it
+		}
+		if body.FullPerms != nil {
+			opts.FullPermissions = *body.FullPerms
+		}
+		if body.CLI != "" || body.FullPerms != nil {
+			rosterSetRun(repoRoot, id, opts.CLI, opts.FullPermissions) // persist so the change survives a restart
 		}
 		reg.Kill(id)
 		na, err := reg.Spawn(id, opts, info)
@@ -837,7 +859,7 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 		// (its cwd -- where its OWN CLAUDE.md defines it) and its CLI backend, both
 		// set in the Add/Edit dialog. No per-agent config file, no injected identity.
 		info := AgentInfo{Name: e.Name, ID: e.Name, Dir: e.Dir, CLI: e.CLI}
-		a, err := reg.Spawn(e.Name, AgentOptions{Folder: e.Dir, CLI: e.CLI}, info)
+		a, err := reg.Spawn(e.Name, AgentOptions{Folder: e.Dir, CLI: e.CLI, FullPermissions: e.FullPerms}, info)
 		if err != nil {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue
