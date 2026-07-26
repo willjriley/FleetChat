@@ -29,8 +29,9 @@ func eq(t *testing.T, got, want []string) {
 	}
 }
 
-// The whole point of structured routing: prose is NOT scanned. These test the
-// recipient RESOLVER (routing.go), which only ever sees the structured `to`.
+// The recipient RESOLVER (routing.go) only ever sees the structured `to` list;
+// it never scans prose. Turning a deliberate @name in the body into structured
+// recipients is a SEPARATE step (mergeAtMentions), tested at the bottom.
 
 func TestHumanUnaddressedBroadcasts(t *testing.T) {
 	eq(t, woke("owner", nil), crew) // operator's plain message -> whole crew
@@ -135,6 +136,87 @@ func TestSplitDirectiveOnlyFirstLine(t *testing.T) {
 	if body != "just chatting\n>>to: carol" {
 		t.Errorf("body should be untouched: %q", body)
 	}
+}
+
+// mergeAtMentions (routing.go) is the bridge that lets a deliberate @name in a
+// message body wake that teammate: it adds @name / @all matches to the `to` list
+// a bare name never matches, so incidental mentions still wake no one.
+
+func TestAtMentionWakesNamedCrew(t *testing.T) {
+	eq(t, sortedCopy(mergeAtMentions(nil, "heads up @dave, can you look?", crew)), []string{"dave"})
+}
+
+func TestBareNameWakesNobody(t *testing.T) {
+	// no @ sigil -> pure display, the cycle-safety guarantee
+	eq(t, mergeAtMentions(nil, "I think dave already handled this", crew), nil)
+}
+
+func TestAtAllWakesEveryone(t *testing.T) {
+	eq(t, sortedCopy(mergeAtMentions(nil, "@all standup in 5", crew)), []string{"all"})
+}
+
+func TestAtMentionUnknownIgnored(t *testing.T) {
+	eq(t, mergeAtMentions(nil, "ping @nobody-here", crew), nil)
+}
+
+func TestAtMentionMergesWithStructuredTo(t *testing.T) {
+	// a composer chip (bob) PLUS an @dave in the body -> both, deduped
+	eq(t, sortedCopy(mergeAtMentions([]string{"bob"}, "and @dave too", crew)), []string{"bob", "dave"})
+}
+
+func TestAtMentionDedupesAgainstTo(t *testing.T) {
+	// @carol already addressed via `to` (with the @ prefix) -> no duplicate
+	got := mergeAtMentions([]string{"@carol"}, "thanks @carol", crew)
+	if len(got) != 1 {
+		t.Errorf("expected carol once, got %v", got)
+	}
+}
+
+func TestAtMentionCaseInsensitive(t *testing.T) {
+	eq(t, sortedCopy(mergeAtMentions(nil, "over to you @DAVE", crew)), []string{"dave"})
+}
+
+func TestAtMentionIgnoredInFencedCode(t *testing.T) {
+	// a pasted diff/log inside a fence must not wake anyone -- the UI wouldn't
+	// chip it either, so a wake here would have no visible cause
+	body := "here's the log:\n```\n[route] msg from @dave to @all\n```\ndone"
+	eq(t, mergeAtMentions(nil, body, crew), nil)
+}
+
+func TestAtMentionIgnoredInInlineCode(t *testing.T) {
+	eq(t, mergeAtMentions(nil, "the handle `@bob` is just an example", crew), nil)
+}
+
+func TestAtMentionIgnoredInBlockquote(t *testing.T) {
+	// quoting a teammate's message must not re-summon them
+	eq(t, mergeAtMentions(nil, "> @carol said hi\nagreed", crew), nil)
+}
+
+func TestAtMentionRealAlongsideQuoted(t *testing.T) {
+	// a genuine @erin OUTSIDE code still wakes, even when a fenced block also
+	// contains handles (which must be ignored)
+	body := "@erin please review:\n```\n@dave @bob touched this\n```"
+	eq(t, sortedCopy(mergeAtMentions(nil, body, crew)), []string{"erin"})
+}
+
+func TestAtMentionIgnoresEmail(t *testing.T) {
+	// "carol" is real crew, but "@carol" glued to a word (no leading boundary) is
+	// an address fragment, not an address -- it must NOT wake carol. This is the
+	// front-end-parity fix: the composer wouldn't chip it either.
+	eq(t, mergeAtMentions(nil, "forward this to bob@carol.com please", crew), nil)
+}
+
+func TestAtMentionNeedsLeadingBoundary(t *testing.T) {
+	// only a boundary-led @ is deliberate; mid-word "x@dave" is not an address
+	eq(t, mergeAtMentions(nil, "seex@dave", crew), nil)
+	// start-of-string, space, and "(" count as boundaries
+	eq(t, sortedCopy(mergeAtMentions(nil, "@dave", crew)), []string{"dave"})
+	eq(t, sortedCopy(mergeAtMentions(nil, "(cc @bob)", crew)), []string{"bob"})
+	// a LEADING ">" is a blockquote line, not an address -- it must NOT wake
+	// (the MAJOR-1 quote/code exclusion; see TestAtMentionIgnoredInBlockquote).
+	// A mid-line ">" before @ still counts as a boundary (UI chip parity).
+	eq(t, mergeAtMentions(nil, ">@erin", crew), nil)
+	eq(t, sortedCopy(mergeAtMentions(nil, "cc >@erin", crew)), []string{"erin"})
 }
 
 func sortedCopy(s []string) []string {

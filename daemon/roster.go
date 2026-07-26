@@ -20,6 +20,10 @@ type RosterEntry struct {
 	// single source of an agent's run config (dir + cli); there is no per-agent
 	// config file. Empty = the daemon's default backend.
 	CLI string `json:"cli,omitempty"`
+	// FullPerms runs this agent with the approval gate off (claude
+	// --dangerously-skip-permissions) -- act on any path / run anything, not just
+	// its own folder. Per-agent opt-in from the Add/Edit "full permissions" checkbox.
+	FullPerms bool `json:"full_perms,omitempty"`
 }
 
 // rosterMu serializes the WHOLE read-modify-write-rename cycle in
@@ -86,7 +90,7 @@ func writeRoster(repoRoot string, entries []RosterEntry) error {
 // rosterAdd is idempotent -- adding a name already present is a no-op,
 // matching /control/add's behavior of returning the existing agent rather
 // than erroring.
-func rosterAdd(repoRoot, name, dir, cli string) {
+func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -95,13 +99,13 @@ func rosterAdd(repoRoot, name, dir, cli string) {
 			return
 		}
 	}
-	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli}))
+	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli, FullPerms: fullPerms}))
 }
 
-// rosterSetCli updates an existing agent's CLI backend in the durable roster, so
-// a CLI change made in the Edit dialog (which respawns the live process) also
-// survives the next restart. A name not present is a no-op.
-func rosterSetCli(repoRoot, name, cli string) {
+// rosterSetRun updates an existing agent's run config (CLI backend + full-perms)
+// in the durable roster, so a change made in the Edit dialog (which respawns the
+// live process) also survives the next restart. A name not present is a no-op.
+func rosterSetRun(repoRoot, name, cli string, fullPerms bool) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -109,11 +113,18 @@ func rosterSetCli(repoRoot, name, cli string) {
 	for i := range entries {
 		if entries[i].Name == name {
 			entries[i].CLI = cli
+			entries[i].FullPerms = fullPerms
 			changed = true
 		}
 	}
 	if changed {
 		writeRoster(repoRoot, entries)
+	} else {
+		// Not in the durable roster (e.g. a transiently-spawned agent): the run
+		// config change applies to the LIVE process but won't survive a restart.
+		// Log it so a "my Full-permissions toggle didn't stick" is diagnosable
+		// rather than a silent no-op. Fails toward off, the safe direction.
+		log.Printf("[roster] %q not in durable roster -- run-config change is live-only, won't persist across restart", name)
 	}
 }
 

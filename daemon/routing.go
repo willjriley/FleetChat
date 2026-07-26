@@ -5,14 +5,20 @@ import (
 	"strings"
 )
 
-// Routing is now STRUCTURED, not derived from prose. This is the fix for the
-// anti-pattern that caused the wake-cycle: previously routing scanned a
-// message's body text for "@name", so an agent mentioning another agent in
-// passing ("not waking @dave") actually woke them, whose reply mentioned a
-// third, and so on. Now who a message NOTIFIES comes from an explicit
-// recipient list on the message -- humans set it from the composer's chips,
-// agents set it with a >>to: directive (see splitDirective). An @name written
-// in the body is DISPLAY ONLY and never wakes anyone.
+// Routing wakes only who a message EXPLICITLY addresses. Two ways to address:
+// the structured `to` list (humans set it from the composer; agents may set it
+// with a >>to: directive -- see splitDirective), AND a deliberate @name in the
+// body (mergeAtMentions) that names a real crew member (or @all). A BARE name --
+// no @ -- is display only and wakes no one, so an agent mentioning "dave" in
+// passing never summons him; only a deliberate "@dave" does.
+//
+// That @-sigil rule stops INCIDENTAL mentions from waking (the original bug: any
+// "@dave" in prose, even "not waking @dave", woke him). It is NOT a full loop
+// breaker: a deliberate @-acknowledgment chain (A "@B thanks" -> B "@A np" -> ...)
+// can still ping-pong, held in check only by the PASS convention (agents are told
+// not to @ anyone for a bare acknowledgment). If a real loop ever shows up, the
+// [route] debug log now records every @-wake source (see board.go Post), so add a
+// mechanical breaker then rather than pre-emptively.
 
 // resolveRecipients decides who a message wakes, from the structured `to`
 // list -- never by scanning prose:
@@ -95,4 +101,66 @@ func splitDirective(text string) (to []string, body string) {
 		}
 	}
 	return to, strings.TrimLeft(rest, "\n")
+}
+
+// atMentionRe finds a DELIBERATE @name in a message body. It mirrors the
+// front-end's target parser (server/web/index.html parseTargets) exactly, so the
+// chips a human sees == who the daemon wakes: a leading boundary (start / space /
+// "(" / ">"), the '@' sigil, a 2-32 char id, and a trailing word boundary. The
+// leading boundary is what makes it deliberate -- it does NOT fire inside an
+// address like "bob@carol.com", nor on a bare name, so incidental or quoted
+// mentions never wake anyone. Group 1 is the name ("all" for the broadcast).
+var atMentionRe = regexp.MustCompile(`(?i)(?:^|[\s(>])@([a-z0-9_-]{2,32})\b`)
+
+// Contexts an @name is quoting, not addressing: a fenced code block (``` or ~~~),
+// an inline `code` span, and a blockquote line (leading ">"). A pasted diff/log
+// or a quoted teammate must not wake anyone -- and since the UI deliberately does
+// NOT chip mentions inside code, a wake from there would show NO chip to explain
+// it. addressableText blanks these out before the scan; the UI's parseTargets
+// mirrors the same exclusion so composer chips still match who the daemon wakes.
+var (
+	fencedCodeRe = regexp.MustCompile("(?s)```.*?```|~~~.*?~~~")
+	inlineCodeRe = regexp.MustCompile("`[^`]*`")
+)
+
+func addressableText(s string) string {
+	s = fencedCodeRe.ReplaceAllString(s, " ")
+	s = inlineCodeRe.ReplaceAllString(s, " ")
+	// Blank whole blockquote lines (first non-space char is ">") -- quoting a
+	// message that named someone must not re-summon them.
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), ">") {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// mergeAtMentions adds any @name in the body that names a real crew member (or
+// @all) to the recipient list, so "@dave …" wakes dave alongside whatever the
+// structured `to` already carries. Case-insensitive; de-duplicated against `to`.
+// Code spans and quoted lines are excluded first (see addressableText), so a
+// pasted diff or a quoted message never wakes a teammate.
+func mergeAtMentions(to []string, text string, agentIDs []string) []string {
+	if text == "" {
+		return to
+	}
+	text = addressableText(text)
+	idset := make(map[string]bool, len(agentIDs))
+	for _, id := range agentIDs {
+		idset[strings.ToLower(id)] = true
+	}
+	have := make(map[string]bool, len(to))
+	for _, t := range to {
+		have[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(t), "@"))] = true
+	}
+	for _, mm := range atMentionRe.FindAllStringSubmatch(text, -1) {
+		n := strings.ToLower(mm[1])
+		if (n == "all" || idset[n]) && !have[n] {
+			to = append(to, n)
+			have[n] = true
+		}
+	}
+	return to
 }
