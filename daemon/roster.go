@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,8 +36,69 @@ type RosterEntry struct {
 // unrecoverable, not just a stale read.
 var rosterMu sync.Mutex
 
+// rosterPath resolves the ONE durable crew file. It lives OUTSIDE the repo by
+// default so that adding an agent can never become a commit risk, and so the
+// crew survives a clone, a branch switch, or a wiped data/ directory.
+//
+// Precedence, most specific first:
+//
+//	$FLEETCHAT_ROSTER_FILE   -> operator-chosen location
+//	<user config dir>/fleetchat/roster.json   -> the default, outside the repo
+//
+// There is deliberately no in-repo fallback for NEW installs. The old
+// data/roster.json is migrated once (see migrateRosterOutOfRepo) and then never
+// written again -- two files claiming to be the crew is exactly the split that
+// let an added agent look present and not survive a restart.
 func rosterPath(repoRoot string) string {
+	if env := strings.TrimSpace(os.Getenv("FLEETCHAT_ROSTER_FILE")); env != "" {
+		return env
+	}
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "fleetchat", "roster.json")
+	}
+	// Only if the OS gives us no config dir at all.
 	return filepath.Join(repoRoot, "data", "roster.json")
+}
+
+// migrateRosterOutOfRepo moves a pre-existing in-repo roster to the external
+// location, ONCE, on boot. It never overwrites an external roster that already
+// exists -- if both are present the external one is authoritative, because that
+// is the whole point of having a single source.
+//
+// The in-repo copy is renamed rather than deleted: if this migration is ever
+// wrong, the original is still sitting there to inspect.
+func migrateRosterOutOfRepo(repoRoot string) {
+	dst := rosterPath(repoRoot)
+	if _, err := os.Stat(dst); err == nil {
+		return // external roster already exists: it wins, nothing to do
+	}
+	src := filepath.Join(repoRoot, "data", "roster.json")
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return // nothing to migrate
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		log.Printf("[roster] could not create %s: %s", filepath.Dir(dst), err)
+		return
+	}
+	// ATOMIC, matching writeRoster's own tmp+rename pattern -- and it matters
+	// more here, because this runs UNATTENDED AT BOOT. A crash or full disk
+	// mid-write would leave a PARTIAL roster at dst, which then WINS on the next
+	// boot (Stat(dst) succeeds on a truncated file) while the intact source has
+	// already been renamed away and is no longer consulted. Rename is atomic, so
+	// dst only ever appears complete.
+	tmp := dst + ".tmp." + itoa(os.Getpid())
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		log.Printf("[roster] could not stage roster at %s: %s", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		log.Printf("[roster] could not migrate roster to %s: %s", dst, err)
+		return
+	}
+	_ = os.Rename(src, src+".migrated")
+	log.Printf("[roster] migrated crew out of the repo -> %s (old file kept as roster.json.migrated)", dst)
 }
 
 // readRoster distinguishes "no file yet" (nil, silent -- a fresh clone) from
@@ -81,7 +143,9 @@ func writeRoster(repoRoot string, entries []RosterEntry) error {
 	// covers a stray second writer that didn't go through these functions).
 	path := rosterPath(repoRoot)
 	tmp := path + ".tmp." + itoa(os.Getpid())
-	if err := os.WriteFile(tmp, b, 0644); err != nil {
+	// 0600: the roster records per-agent full_perms grants, so it is a
+	// capability record and has no business being world-readable.
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

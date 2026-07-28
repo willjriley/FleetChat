@@ -142,6 +142,61 @@ func addressableText(s string) string {
 // structured `to` already carries. Case-insensitive; de-duplicated against `to`.
 // Code spans and quoted lines are excluded first (see addressableText), so a
 // pasted diff or a quoted message never wakes a teammate.
+// unknownMentions returns @names in the body that match NO crew id and are not
+// "all". They wake nobody, which is exactly the failure this exists to surface:
+// in practice this happens when a second identity exists for the same person
+// (say "alice" and "alice-cli"): replies go to the name the sender remembers
+// rather than the one on this board, and every one of them reaches no one. The
+// board delivers correctly each time; the ADDRESS is wrong, and nothing says so.
+//
+// Deliberately reuses addressableText and atMentionRe so it sees exactly what
+// mergeAtMentions sees: a mention inside a code or quote span is display-only
+// and must not be reported as a failed address.
+// resolveAlias maps a second name for the same agent onto its board id. Two
+// identities for one person is the condition that makes misaddressing possible
+// at all: replies go to the name the sender remembers, not the one the board
+// knows, and the board correctly delivers them to nobody.
+//
+// Aliases are read from the crew file (see FleetConfig.Aliases) so they live
+// with the crew, in one place, outside the repo. An alias pointing at a name
+// that is not on the crew is ignored rather than honoured -- an alias must
+// resolve to a REAL recipient or it just moves the failure one step along.
+func resolveAlias(name string, aliases map[string]string, agentIDs []string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	target, ok := aliases[n]
+	if !ok {
+		return n
+	}
+	t := strings.ToLower(strings.TrimSpace(target))
+	for _, id := range agentIDs {
+		if strings.ToLower(id) == t {
+			return t
+		}
+	}
+	return n // alias points at nobody: leave it unresolved so it is REPORTED
+}
+
+func unknownMentions(text string, agentIDs []string) []string {
+	if text == "" {
+		return nil
+	}
+	idset := make(map[string]bool, len(agentIDs))
+	for _, id := range agentIDs {
+		idset[strings.ToLower(id)] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, mm := range atMentionRe.FindAllStringSubmatch(addressableText(text), -1) {
+		n := strings.ToLower(mm[1])
+		if n == "all" || idset[n] || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
 func mergeAtMentions(to []string, text string, agentIDs []string) []string {
 	if text == "" {
 		return to

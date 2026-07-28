@@ -840,6 +840,9 @@ func announceJoin(board *Board, id string) {
 // board someone has to manually repopulate. Identity comes from each agent's
 // own repo CLAUDE.md; the roster only says where + how to launch it.
 func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
+	// The crew lives outside the repo. Migrate a legacy in-repo roster once,
+	// before anything reads it, so there is exactly one source from here on.
+	migrateRosterOutOfRepo(repoRoot)
 	entries := readRoster(repoRoot)
 	if entries == nil {
 		// No durable roster yet (fresh setup, or data/ was wiped). Seed it from a
