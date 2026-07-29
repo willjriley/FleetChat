@@ -142,3 +142,15 @@ func rosterRemove(repoRoot, name string) {
 	}
 	writeRoster(repoRoot, out)
 }
+
+// openDaemonLog opens the daemon's durable log, beside the crew file and
+// outside the repo. Appends rather than truncates: a restart must not erase the
+// evidence of why the previous run failed, which is precisely when the log is
+// wanted.
+func openDaemonLog() (*os.File, error) {
+	dir := filepath.Dir(rosterPath(""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(filepath.Join(dir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
