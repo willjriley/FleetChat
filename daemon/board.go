@@ -270,9 +270,17 @@ func (b *Board) Post(sender, text string, tags []string, to []string) PostResult
 }
 
 // The board's framing splits into two parts. protocolRules() is the GENERIC
-// protocol every agent is taught -- how addressing wakes a teammate, the two
-// access modes, and the PASS convention -- and messageEnvelope() is the per-turn
-// message itself.
+// protocol every agent is taught -- how addressing wakes a teammate, the PASS
+// convention, that the board voices replies, and the task card API -- and
+// messageEnvelope() is the per-turn message itself.
+//
+// It says NOTHING about an agent's permissions or file access, deliberately.
+// The board does not create agents, choose their CLI flags, or set what they
+// may touch; the operator does, in the settings dialog. It used to describe an
+// access model anyway -- "by default you're scoped to your own project folder"
+// -- which was both untrue and not the board's to state. Describing someone
+// else's configuration is how a claim gets made that nothing backs, so this
+// stays scoped to what the board itself actually governs.
 // The model needs to know it's in a shared chat (not a 1:1), that the PASS
 // convention exists (or it never produces it -- see agent.go's route()), and
 // that routing is ASYMMETRIC: the operator's plain messages reach everyone, but
@@ -318,11 +326,6 @@ func protocolRules() string {
 		"VOICE: the board speaks your replies aloud through its own speaker. Never use a TTS/speak tool " +
 		"on a board reply yourself -- even if your own instructions name a voice for you, that applies to " +
 		"standalone sessions, not here; a self-spoken board reply plays DOUBLE over the board's voice.\n\n" +
-		"YOUR ACCESS -- two modes: by default you're scoped to your own project folder. That's the safe " +
-		"default, not distrust of the board -- act freely within your folder. If the operator asks you to " +
-		"work outside it (or run something your tools refuse for lack of access), don't just decline -- " +
-		"tell them they can turn on \"Full permissions\" for you in your agent settings, which unlocks you " +
-		"to act on any path and run anything. That switch is theirs to flip, and they own that choice.\n\n" +
 		"OPERATING THE BOARD (task cards): the task ledger is a loopback HTTP API on this board at " +
 		"http://127.0.0.1:" + daemonPort + "/threads. Reads are GET; every write is a POST whose JSON body " +
 		"carries an \"op\", plus the header 'X-Fleet-Client: agent'. Put \"agent\":\"<your own board id>\" " +

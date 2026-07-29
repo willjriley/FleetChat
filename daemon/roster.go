@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -25,6 +26,12 @@ type RosterEntry struct {
 	// --dangerously-skip-permissions) -- act on any path / run anything, not just
 	// its own folder. Per-agent opt-in from the Add/Edit "full permissions" checkbox.
 	FullPerms bool `json:"full_perms,omitempty"`
+	// Args are EXTRA arguments appended to the launch command for this agent.
+	// The dialog shows the real command and lets the operator add to it, because
+	// what a given CLI supports is not knowable to us and changes as the CLI
+	// changes -- hard-coding a fixed set of toggles dates immediately, and a
+	// description of the command can drift from the command. This cannot.
+	Args []string `json:"args,omitempty"`
 }
 
 // rosterMu serializes the WHOLE read-modify-write-rename cycle in
@@ -52,6 +59,25 @@ var rosterMu sync.Mutex
 func rosterPath(repoRoot string) string {
 	if env := strings.TrimSpace(os.Getenv("FLEETCHAT_ROSTER_FILE")); env != "" {
 		return env
+	}
+	// A test reaching this line is about to read -- or WRITE -- the machine's
+	// real crew file. When the roster moved out of the repo, repoRoot stopped
+	// determining its location (it is now only the last-resort fallback below),
+	// so passing a t.TempDir() LOOKS like isolation and isn't.
+	//
+	// Not hypothetical: `go test ./...` overwrote a live six-agent roster with
+	// two fixture names, and the board booted on them at the next restart. One
+	// test of a pair set FLEETCHAT_ROSTER_FILE and carried a comment saying that
+	// omitting it would be destructive; the test directly below it didn't. A
+	// comment on one call site is not a guard on the path.
+	//
+	// Panic rather than quietly substituting a temp file: a silent redirect
+	// would let a test that never arranged isolation pass while exercising a
+	// path the daemon doesn't use -- the same class of problem, one layer down.
+	if testing.Testing() {
+		panic("rosterPath: a test reached the REAL user roster. Isolate it with " +
+			"t.Setenv(\"FLEETCHAT_ROSTER_FILE\", filepath.Join(t.TempDir(), \"roster.json\")) -- " +
+			"repoRoot no longer determines the roster location, so a temp dir alone is not isolation.")
 	}
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
 		return filepath.Join(dir, "fleetchat", "roster.json")
@@ -154,7 +180,7 @@ func writeRoster(repoRoot string, entries []RosterEntry) error {
 // rosterAdd is idempotent -- adding a name already present is a no-op,
 // matching /control/add's behavior of returning the existing agent rather
 // than erroring.
-func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool) {
+func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool, args []string) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -163,13 +189,13 @@ func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool) {
 			return
 		}
 	}
-	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli, FullPerms: fullPerms}))
+	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli, FullPerms: fullPerms, Args: args}))
 }
 
 // rosterSetRun updates an existing agent's run config (CLI backend + full-perms)
 // in the durable roster, so a change made in the Edit dialog (which respawns the
 // live process) also survives the next restart. A name not present is a no-op.
-func rosterSetRun(repoRoot, name, cli string, fullPerms bool) {
+func rosterSetRun(repoRoot, name, cli string, fullPerms bool, args []string) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -178,6 +204,7 @@ func rosterSetRun(repoRoot, name, cli string, fullPerms bool) {
 		if entries[i].Name == name {
 			entries[i].CLI = cli
 			entries[i].FullPerms = fullPerms
+			entries[i].Args = args
 			changed = true
 		}
 	}

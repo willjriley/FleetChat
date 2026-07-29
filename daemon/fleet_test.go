@@ -111,6 +111,12 @@ func TestSeedRosterFromFleet(t *testing.T) {
 // a reserved name, a flag-shaped token) into the roster, and duplicates collapse.
 func TestSeedRosterRejectsBadNames(t *testing.T) {
 	dir := t.TempDir()
+	// seedRosterFromFleet PERSISTS, so this needs the same pin as the test above.
+	// Without it this wrote "alice" and "ok_1" over the real machine's crew file,
+	// and the board booted on those two fixtures at the next restart. rosterPath
+	// now panics rather than letting a test get here, so this line is enforced
+	// and not merely remembered.
+	t.Setenv("FLEETCHAT_ROSTER_FILE", filepath.Join(dir, "roster.json"))
 	crew := []string{"alice", "alice", "BOARD", "all", "../etc", "has space", "ok_1"}
 	b, _ := json.Marshal(FleetConfig{Crew: crew})
 	writeFile(t, filepath.Join(dir, "fleet.local.json"), string(b))

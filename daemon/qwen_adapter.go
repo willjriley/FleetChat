@@ -23,7 +23,7 @@ import (
 // system/init line and reused as -r, so the conversation continues across turns and
 // across daemon restarts (the daemon re-passes the saved id via --resume).
 //
-// protocolRules() (the board operating rules -- addressing, the two access modes,
+// protocolRules() (the board operating rules -- addressing, the PASS convention,
 // the task card API) reaches qwen OUT OF BAND, as its SYSTEM PROMPT -- the analog
 // of claude's --append-system-prompt. qwen-code has no append flag, but it honors
 // QWEN_SYSTEM_MD=<file>, which REPLACES its base system prompt with that file and
@@ -41,29 +41,7 @@ import (
 // that copy landing in the transcript. firstTurn tracks that fallback only.
 // The model is deliberately unset -- qwen uses its own configured default.
 func runQwenAdapter(args []string) {
-	repo, resume, qwenBin := "", "", "qwen"
-	fullPerms := false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--repo":
-			if i+1 < len(args) {
-				repo = args[i+1]
-				i++
-			}
-		case "--resume":
-			if i+1 < len(args) {
-				resume = args[i+1]
-				i++
-			}
-		case "--qwen-bin":
-			if i+1 < len(args) {
-				qwenBin = args[i+1]
-				i++
-			}
-		case "--full-perms":
-			fullPerms = true // -> qwen --approval-mode yolo (max bypass)
-		}
-	}
+	repo, resume, qwenBin, fullPerms, extra := parseQwenAdapterArgs(args)
 	session := resume
 
 	// Preferred path: deliver protocolRules() as qwen's SYSTEM PROMPT via
@@ -215,6 +193,7 @@ func runQwenAdapter(args []string) {
 		if fullPerms {
 			qargs = append(qargs, "--approval-mode", "yolo") // full permissions: qwen's max approval bypass
 		}
+		qargs = appendExtra(qargs, extra) // last, so a last-wins flag can override ours
 		qc := exec.Command(qwenBin, qargs...)
 		if repo != "" {
 			qc.Dir = repo
@@ -344,4 +323,44 @@ func buildQwenSystemPrompt(qwenBin string) (string, error) {
 		return "", fmt.Errorf("stage combined system prompt: %w", err)
 	}
 	return outFile, nil
+}
+
+// parseQwenAdapterArgs reads the argv qwenCommand built for this adapter.
+//
+// Split out of runQwenAdapter purely to be testable: the daemon builds this
+// argv and the adapter consumes it, and the two halves living in different
+// processes is exactly the seam where an argument can vanish without anything
+// failing. A round-trip test over this function is what proves the operator's
+// flags actually arrive.
+func parseQwenAdapterArgs(args []string) (repo, resume, qwenBin string, fullPerms bool, extra []string) {
+	qwenBin = "qwen"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--repo":
+			if i+1 < len(args) {
+				repo = args[i+1]
+				i++
+			}
+		case "--resume":
+			if i+1 < len(args) {
+				resume = args[i+1]
+				i++
+			}
+		case "--qwen-bin":
+			if i+1 < len(args) {
+				qwenBin = args[i+1]
+				i++
+			}
+		case "--full-perms":
+			fullPerms = true // -> qwen --approval-mode yolo (max bypass)
+		case "--extra-arg":
+			// Repeated once per argument, so each one crosses the process
+			// boundary as a discrete argv element and is never re-split here.
+			if i+1 < len(args) {
+				extra = append(extra, args[i+1])
+				i++
+			}
+		}
+	}
+	return repo, resume, qwenBin, fullPerms, extra
 }

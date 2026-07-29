@@ -34,16 +34,15 @@ per-session token for that local-process residual is a separate, optional follow
 - **The crew is trusted; the board is not a public forum.** Anyone on loopback can post as any
   sender. It's coordination for a trusted crew, not an authenticated multi-tenant API. Don't expose
   it to untrusted users.
-- **Agents are not sandboxed.** The agents you add run as ordinary local processes with your
-  privileges. If you point them at code or tools that execute untrusted input, *you* own containing
-  them.
-- **"Full permissions" agents run with the approval gate off.** By default an agent is scoped to its
-  own folder (`--add-dir`); the per-agent **Full permissions** checkbox launches it with
-  `--dangerously-skip-permissions` (claude) / `--approval-mode yolo` (qwen) so it can act on any path
-  and run anything without prompts. That's the point for agents you want to *do* the work — but it's
-  real power; enable it deliberately, per agent, for a crew you trust.
+- **Agents are not sandboxed, and their permissions are yours to set.** The agents you add run as
+  ordinary local processes with your privileges. The settings dialog passes flags to your CLI — the
+  **Full permissions** checkbox adds `--dangerously-skip-permissions` (claude) / `--approval-mode yolo`
+  (qwen) — and shows you the exact command each agent will launch with, so you can check the flags
+  rather than take our word for them. What an agent may do is your CLI's configuration and your call.
+  (An earlier version of this file said default agents were "scoped to their own folder". That was
+  wrong — `--add-dir` adds a directory, it doesn't confine one.)
 - **Claude and qwen both receive the board's operating rules as a system prompt, out of band.** The rules
-  (how addressing wakes a teammate, the two access modes, the task card API) reach a claude agent via
+  (how addressing wakes a teammate, the PASS convention, the task card API) reach a claude agent via
   `--append-system-prompt` and a qwen agent via `QWEN_SYSTEM_MD` (a staged `<qwen base prompt> + <rules>`
   file, set on the managed child's environment only). Both are re-applied per launch and neither is written
   into the agent's saved transcript, so the rules stay current and a hand-launched CLI in the same repo
