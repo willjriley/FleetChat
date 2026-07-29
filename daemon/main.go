@@ -40,6 +40,28 @@ var kokoroVoices = []string{
 }
 
 func main() {
+	// Log to a FILE as well as the console. Until now the daemon logged only to
+	// its console window, so every "failed to bootstrap" and every "SendPrompt
+	// failed (not woken)" was discarded the moment that window scrolled or
+	// closed. Two consequences, both real:
+	//
+	//   - an agent that fails to spawn leaves NO evidence of why. Diagnosing one
+	//     became an hour of inference against a log line that had already been
+	//     computed and thrown away.
+	//   - an agent acting on the host leaves no durable record that it was the
+	//     agent. Commits made by a managed agent carry the machine's git identity,
+	//     so without a daemon log there is nothing attesting the action was
+	//     automated rather than human.
+	//
+	// The log lives beside the crew file, OUTSIDE the repo, for the same reason:
+	// operational records are not repo content.
+	if lf, err := openDaemonLog(); err == nil {
+		log.SetOutput(io.MultiWriter(os.Stderr, lf))
+		log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	} else {
+		log.Printf("[daemon] could not open a log file (%s) -- console only, so spawn failures will not be durable", err)
+	}
+
 	// Qwen-adapter mode: the daemon re-execs ITSELF in this mode to serve as a qwen
 	// agent's held-open "process" (see qwenCommand). It bridges Qwen-Code's one-shot
 	// -p to the daemon's held-open stream-json contract, so no spawn-per-turn logic
