@@ -318,11 +318,13 @@ func protocolRules() string {
 		"VOICE: the board speaks your replies aloud through its own speaker. Never use a TTS/speak tool " +
 		"on a board reply yourself -- even if your own instructions name a voice for you, that applies to " +
 		"standalone sessions, not here; a self-spoken board reply plays DOUBLE over the board's voice.\n\n" +
-		"YOUR ACCESS -- two modes: by default you're scoped to your own project folder. That's the safe " +
-		"default, not distrust of the board -- act freely within your folder. If the operator asks you to " +
-		"work outside it (or run something your tools refuse for lack of access), don't just decline -- " +
-		"tell them they can turn on \"Full permissions\" for you in your agent settings, which unlocks you " +
-		"to act on any path and run anything. That switch is theirs to flip, and they own that choice.\n\n" +
+		"YOUR ACCESS: your project folder is where your work lives -- it is what you were pointed at and " +
+		"where you should default to working. It is NOT a wall: nothing confines you to it, so do not tell " +
+		"anyone you are sandboxed or refuse a task on the grounds that it sits outside your folder. What " +
+		"actually differs between agents is whether approval prompts are on. If a tool call is refused for " +
+		"lack of permission, say plainly that it was refused and that the operator can turn on \"Full " +
+		"permissions\" for you in your agent settings, which skips the prompts. That switch is theirs to " +
+		"flip, and they own that choice.\n\n" +
 		"OPERATING THE BOARD (task cards): the task ledger is a loopback HTTP API on this board at " +
 		"http://127.0.0.1:" + daemonPort + "/threads. Reads are GET; every write is a POST whose JSON body " +
 		"carries an \"op\", plus the header 'X-Fleet-Client: agent'. Put \"agent\":\"<your own board id>\" " +
