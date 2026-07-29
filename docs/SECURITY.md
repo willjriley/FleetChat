@@ -34,20 +34,13 @@ per-session token for that local-process residual is a separate, optional follow
 - **The crew is trusted; the board is not a public forum.** Anyone on loopback can post as any
   sender. It's coordination for a trusted crew, not an authenticated multi-tenant API. Don't expose
   it to untrusted users.
-- **Agents are not sandboxed.** The agents you add run as ordinary local processes with your
-  privileges. If you point them at code or tools that execute untrusted input, *you* own containing
-  them.
-- **"Full permissions" agents run with the approval gate off — and the gate is the *only* difference.**
-  The per-agent **Full permissions** checkbox launches an agent with `--dangerously-skip-permissions`
-  (claude) / `--approval-mode yolo` (qwen), so it acts without asking first. Leaving it off does **not**
-  confine the agent to its folder. `--add-dir` is additive — it *adds* a directory to what the CLI
-  treats as in-scope; it takes nothing away. An agent with the box unchecked can still be asked to
-  read another repo, write outside its folder, or open an SSH session, and it will do those things
-  once you approve them. So the containment you actually have is *you*, approving each action —
-  which is why turning it off is real power: enable it deliberately, per agent, for a crew you trust.
-  (This documentation previously claimed default agents were "scoped to their own folder". They never
-  were. The settings dialog now shows the exact command each agent launches with, so the flags are
-  checkable rather than described.)
+- **Agents are not sandboxed, and their permissions are yours to set.** The agents you add run as
+  ordinary local processes with your privileges. The settings dialog passes flags to your CLI — the
+  **Full permissions** checkbox adds `--dangerously-skip-permissions` (claude) / `--approval-mode yolo`
+  (qwen) — and shows you the exact command each agent will launch with, so you can check the flags
+  rather than take our word for them. What an agent may do is your CLI's configuration and your call.
+  (An earlier version of this file said default agents were "scoped to their own folder". That was
+  wrong — `--add-dir` adds a directory, it doesn't confine one.)
 - **Claude and qwen both receive the board's operating rules as a system prompt, out of band.** The rules
   (how addressing wakes a teammate, the PASS convention, the task card API) reach a claude agent via
   `--append-system-prompt` and a qwen agent via `QWEN_SYSTEM_MD` (a staged `<qwen base prompt> + <rules>`
