@@ -23,7 +23,7 @@ import (
 // system/init line and reused as -r, so the conversation continues across turns and
 // across daemon restarts (the daemon re-passes the saved id via --resume).
 //
-// protocolRules() (the board operating rules -- addressing, the two access modes,
+// protocolRules() (the board operating rules -- addressing, the PASS convention,
 // the task card API) reaches qwen OUT OF BAND, as its SYSTEM PROMPT -- the analog
 // of claude's --append-system-prompt. qwen-code has no append flag, but it honors
 // QWEN_SYSTEM_MD=<file>, which REPLACES its base system prompt with that file and

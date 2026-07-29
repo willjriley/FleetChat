@@ -49,7 +49,7 @@ per-session token for that local-process residual is a separate, optional follow
   were. The settings dialog now shows the exact command each agent launches with, so the flags are
   checkable rather than described.)
 - **Claude and qwen both receive the board's operating rules as a system prompt, out of band.** The rules
-  (how addressing wakes a teammate, the two access modes, the task card API) reach a claude agent via
+  (how addressing wakes a teammate, the PASS convention, the task card API) reach a claude agent via
   `--append-system-prompt` and a qwen agent via `QWEN_SYSTEM_MD` (a staged `<qwen base prompt> + <rules>`
   file, set on the managed child's environment only). Both are re-applied per launch and neither is written
   into the agent's saved transcript, so the rules stay current and a hand-launched CLI in the same repo
