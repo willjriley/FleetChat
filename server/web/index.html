@@ -597,7 +597,15 @@
               "&full_perms="+(fpcb.checked?"1":"0")+"&args="+encodeURIComponent(xain.value||"");
       fetch("/control/command-preview?"+q,{headers:headers()})
         .then(function(r){ return r.json(); })
-        .then(function(d){ cmdbox.textContent = d.error ? ("can't preview: "+d.error) : (d.bin+" "+(d.args||[]).join(" ")); })
+        .then(function(d){
+          if(d.error){ cmdbox.textContent="can't preview: "+d.error; return; }
+          // Each argument is shown as its OWN token, quoted where it contains a
+          // space. A single joined line would hide where the argument field got
+          // split, which is the one thing an operator actually needs to check.
+          cmdbox.textContent = [d.bin].concat(d.args||[]).map(function(a){
+            return /[\s]/.test(a) ? '"'+a+'"' : a;
+          }).join(" ");
+        })
         .catch(function(){ cmdbox.textContent="(preview unavailable)"; });
     }
     function queueCmd(){ if(cmdTimer) clearTimeout(cmdTimer); cmdTimer=setTimeout(refreshCmd,150); }

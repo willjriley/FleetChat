@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -80,13 +81,21 @@ func TestSplitArgs(t *testing.T) {
 		{"  --a   --b  ", []string{"--a", "--b"}}, // runs of whitespace collapse
 		// The load-bearing one: a Windows path with spaces, quoted.
 		{`--add-dir "C:\repos\my folder"`, []string{"--add-dir", `C:\repos\my folder`}},
-		// Unquoted backslashes are literal too -- no escape processing at all.
+		// Unquoted backslashes are literal too, which is the whole point.
 		{`--add-dir C:\repos\forge`, []string{"--add-dir", `C:\repos\forge`}},
 		{"--x 'a b'", []string{"--x", "a b"}}, // single quotes group as well
 		// A quote can open mid-argument and the argument continues after it closes.
 		{`--dir="a b"c`, []string{`--dir=a bc`}},
 		{`""`, []string{""}},                                   // an explicitly empty argument is a real argument
 		{`--x "unterminated`, []string{"--x", "unterminated"}}, // salvaged, not dropped
+		// A backslash escapes a QUOTE and nothing else, so a literal quote is
+		// reachable without breaking any of the path cases above.
+		{`--x a\"b`, []string{`--x`, `a"b`}},
+		{`--x "a\"b"`, []string{`--x`, `a"b`}},
+		// The cross-platform sharp edge, pinned. POSIX shell rules would eat these
+		// separators and hand the CLI C:reposforge; and a trailing backslash (one
+		// that precedes no quote) stays put rather than escaping the line ending.
+		{`C:\repos\forge\`, []string{`C:\repos\forge\`}},
 		// No shell runs these, so metacharacters are ordinary characters.
 		{`--msg "a; rm -rf / | b"`, []string{"--msg", "a; rm -rf / | b"}},
 	}
@@ -120,10 +129,21 @@ func TestPreviewMatchesLaunch(t *testing.T) {
 		if gotBin != wantBin || strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 			t.Fatalf("%s: preview %q %v != launch %q %v", cli, gotBin, gotArgs, wantBin, wantArgs)
 		}
-		// Operator args must actually reach the command, and land LAST so a
-		// last-wins CLI honours them over anything we set earlier.
-		if n := len(gotArgs); n < 4 || gotArgs[n-4] != "--model" || gotArgs[n-3] != "sonnet" ||
-			gotArgs[n-2] != "--add-dir" || gotArgs[n-1] != `C:\a b` {
+		// Operator args must actually reach the CLI, and land LAST so a last-wins
+		// flag beats anything we set earlier. HOW they travel differs by backend,
+		// and that difference is load-bearing: claude is launched directly, but
+		// qwen runs behind the self-exec adapter, so appending to the argv here
+		// would hand them to the WRAPPER and qwen itself would never see them.
+		want := []string{"--model", "sonnet", "--add-dir", `C:\a b`}
+		if cli == "qwen" {
+			// Forwarded as discrete --extra-arg pairs across the process boundary.
+			_, _, _, _, fwd := parseQwenAdapterArgs(gotArgs[1:]) // [0] is "qwen-adapter"
+			if fmt.Sprintf("%q", fwd) != fmt.Sprintf("%q", want) {
+				t.Fatalf("qwen: adapter would forward %q, want %q", fwd, want)
+			}
+			continue
+		}
+		if n := len(gotArgs); n < 4 || fmt.Sprintf("%q", gotArgs[n-4:]) != fmt.Sprintf("%q", want) {
 			t.Fatalf("%s: extra args not appended last: %v", cli, gotArgs)
 		}
 	}

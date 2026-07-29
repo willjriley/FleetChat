@@ -175,22 +175,27 @@ func agentWorkDir(id, folder string) string {
 // selecting one fails LOUDLY rather than launching claude's flags at a different
 // binary (which would misbehave silently). Adding a backend is one more case
 // here plus its output adapter -- not a rewrite. "" defaults to claude.
-// appendExtra puts operator-supplied arguments LAST, so they can override an
-// earlier flag where the CLI honours last-wins, and so the preview shows them
-// in the position they will actually occupy.
 // splitArgs turns the operator's single free-text argument line into an argv
-// slice. Quotes group; whitespace separates.
+// slice. Whitespace separates; quotes group; a backslash is LITERAL except when
+// it immediately precedes a quote character, where it escapes that quote.
 //
-// Backslash is NOT an escape character here, deliberately. On Windows the
-// argument most likely to need quoting is a path -- `--add-dir "C:\repos\my
-// folder"` -- and treating `\` as an escape would eat the separators and hand
-// the CLI `C:reposmy folder`. The cost is that a literal quote can't be
-// embedded in an argument; the benefit is that every Windows path a user pastes
-// survives intact. That is the right trade for this field.
+// That rule is not invented here -- it is the Windows CommandLineToArgvW
+// convention -- and it is the only common rule that leaves `C:\repos\forge`
+// intact whether or not the operator quoted it. POSIX shell rules would turn
+// that same unquoted path into `C:reposforge` silently, which is the worst
+// available failure for a field whose entire point is that you can see what
+// will run. On Linux and macOS the practical difference is narrow: quoting for
+// spaces behaves identically, and only the rarer `foo\ bar` idiom has to be
+// written as "foo bar" instead.
 //
-// Args are passed to exec directly, not through a shell, so there is no shell
-// metacharacter to worry about: `;` and `|` arrive as literal characters in an
-// argument, not as operators.
+// Splitting a line at all is a real limitation of a one-line field -- most
+// tools dodge it by taking a JSON array (VS Code, Docker, Kubernetes) or by
+// handing the string to an actual shell. This takes the third road, systemd's:
+// its own documented rule, plus the dialog rendering the RESULT token by token,
+// so the operator never has to know the rule to see what it produced.
+//
+// No shell is involved -- these go to exec directly -- so `;` and `|` arrive as
+// ordinary characters inside an argument, not as operators.
 func splitArgs(s string) []string {
 	var out []string
 	var cur strings.Builder
@@ -204,7 +209,17 @@ func splitArgs(s string) []string {
 			started = false
 		}
 	}
-	for _, r := range s {
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		// A backslash escapes ONLY a quote character. Anywhere else it is a
+		// literal, which is what keeps an unquoted Windows path intact.
+		if r == '\\' && i+1 < len(rs) && (rs[i+1] == '"' || rs[i+1] == '\'') {
+			cur.WriteRune(rs[i+1])
+			started = true
+			i++
+			continue
+		}
 		switch {
 		case quote != 0:
 			if r == quote {
@@ -226,6 +241,9 @@ func splitArgs(s string) []string {
 	return out
 }
 
+// appendExtra puts operator-supplied arguments LAST, so they can override an
+// earlier flag where the CLI honours last-wins, and so the preview shows them
+// in the position they will actually occupy.
 func appendExtra(args []string, extra []string) []string {
 	for _, a := range extra {
 		if strings.TrimSpace(a) != "" {
@@ -244,11 +262,9 @@ func buildCLICommand(opts AgentOptions) (bin string, args []string, err error) {
 		bin, args = claudeCommand(opts)
 		return bin, appendExtra(args, opts.ExtraArgs), nil
 	case "qwen":
-		bin, args, err = qwenCommand(opts)
-		if err != nil {
-			return "", nil, err
-		}
-		return bin, appendExtra(args, opts.ExtraArgs), nil
+		// NOT appendExtra: qwenCommand already forwarded them as --extra-arg
+		// pairs for the adapter to hand to qwen itself.
+		return qwenCommand(opts)
 	case "gemini":
 		// INVARIANT when you wire this: every managed agent MUST receive protocolRules()
 		// via this backend's own system-prompt equivalent (claude uses --append-system-prompt;
@@ -337,6 +353,14 @@ func qwenCommand(opts AgentOptions) (bin string, args []string, err error) {
 	}
 	if opts.FullPermissions {
 		args = append(args, "--full-perms") // adapter turns this into qwen's own approval-bypass flag
+	}
+	// Operator arguments are FORWARDED, not appended: what buildCLICommand
+	// returns here is the ADAPTER's command line, and qwen is the adapter's
+	// child. Appending them to this argv would give them to the wrapper.
+	for _, a := range opts.ExtraArgs {
+		if strings.TrimSpace(a) != "" {
+			args = append(args, "--extra-arg", a)
+		}
 	}
 	return exe, args, nil
 }
