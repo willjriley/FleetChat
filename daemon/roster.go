@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -58,6 +59,25 @@ var rosterMu sync.Mutex
 func rosterPath(repoRoot string) string {
 	if env := strings.TrimSpace(os.Getenv("FLEETCHAT_ROSTER_FILE")); env != "" {
 		return env
+	}
+	// A test reaching this line is about to read -- or WRITE -- the machine's
+	// real crew file. When the roster moved out of the repo, repoRoot stopped
+	// determining its location (it is now only the last-resort fallback below),
+	// so passing a t.TempDir() LOOKS like isolation and isn't.
+	//
+	// Not hypothetical: `go test ./...` overwrote a live six-agent roster with
+	// two fixture names, and the board booted on them at the next restart. One
+	// test of a pair set FLEETCHAT_ROSTER_FILE and carried a comment saying that
+	// omitting it would be destructive; the test directly below it didn't. A
+	// comment on one call site is not a guard on the path.
+	//
+	// Panic rather than quietly substituting a temp file: a silent redirect
+	// would let a test that never arranged isolation pass while exercising a
+	// path the daemon doesn't use -- the same class of problem, one layer down.
+	if testing.Testing() {
+		panic("rosterPath: a test reached the REAL user roster. Isolate it with " +
+			"t.Setenv(\"FLEETCHAT_ROSTER_FILE\", filepath.Join(t.TempDir(), \"roster.json\")) -- " +
+			"repoRoot no longer determines the roster location, so a temp dir alone is not isolation.")
 	}
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
 		return filepath.Join(dir, "fleetchat", "roster.json")

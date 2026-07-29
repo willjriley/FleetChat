@@ -54,8 +54,12 @@ func main() {
 	//     automated rather than human.
 	//
 	// The log lives beside the crew file, OUTSIDE the repo, for the same reason:
-	// operational records are not repo content.
+	// operational records are not repo content. It is opened here and the SINKS
+	// ARE COMBINED BELOW, once -- see the tee comment at repoRoot for why that
+	// matters.
+	var userLog *os.File
 	if lf, err := openDaemonLog(); err == nil {
+		userLog = lf
 		log.SetOutput(io.MultiWriter(os.Stderr, lf))
 		log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	} else {
@@ -87,11 +91,28 @@ func main() {
 	// gets each line even if stderr errors (a torn-down hidden console): MultiWriter
 	// returns on the FIRST writer's error. Append keeps history across restarts;
 	// best-effort -- fall back to stderr-only rather than failing to boot.
+	//
+	// EVERY sink is combined in ONE SetOutput call. This used to be a second
+	// SetOutput that silently REPLACED the first, so the out-of-repo log opened
+	// above stayed 0 bytes -- and that is the file the restart script reads to
+	// report why an agent failed to come up. The one time it was needed (a board
+	// that booted with the wrong crew) it printed nothing, because the sink had
+	// been swapped out from under it three lines later. log.SetOutput is
+	// last-call-wins; two of them is not two logs, it is one log and one
+	// convincing empty file.
+	sinks := []io.Writer{os.Stderr}
 	if logFile, ferr := os.OpenFile(filepath.Join(repoRoot, "data", "daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); ferr == nil {
-		log.SetOutput(io.MultiWriter(logFile, os.Stderr))
+		// First in the list so the durable sink still gets the line if stderr
+		// errors -- MultiWriter stops at the first writer that fails, and under
+		// `start /min` stderr is a hidden console that can be torn down.
+		sinks = append([]io.Writer{logFile}, sinks...)
 	} else {
-		log.Printf("[daemon] could not open data/daemon.log for tee-logging (%s) -- stderr only", ferr)
+		log.Printf("[daemon] could not open data/daemon.log for tee-logging (%s)", ferr)
 	}
+	if userLog != nil {
+		sinks = append([]io.Writer{userLog}, sinks...)
+	}
+	log.SetOutput(io.MultiWriter(sinks...))
 
 	// Expose the data dir to spawned agents via the environment (they inherit
 	// os.Environ() -- see NewAgent's cmd.Env). The qwen adapter uses it to cache
