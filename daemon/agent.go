@@ -51,7 +51,7 @@ type rawClaudeLine struct {
 type Agent struct {
 	id        string
 	opts      AgentOptions // remembered so a restart can respawn with the SAME model/config, not silently reset to defaults
-	info      AgentInfo   // remembered so /roster and a tray restart can show/reuse the agent's name + run config, not just the raw id
+	info      AgentInfo    // remembered so /roster and a tray restart can show/reuse the agent's name + run config, not just the raw id
 	cmd       *exec.Cmd
 	in        *bufio.Writer // subprocess stdin, wrapped for line-writing
 	mu        sync.Mutex
@@ -117,8 +117,12 @@ type sendJob struct {
 // its own flags (see buildCLICommand) -- a real Gemini/Qwen adapter emits its
 // own, not an assumption that --model/--system-prompt are universal.
 type AgentOptions struct {
-	Model  string // "" = whatever the CLI's own default is
-	Folder string // "" = no home folder; otherwise the agent's cwd (its own repo) + --add-dir
+	// ExtraArgs are appended verbatim to the built command. Operator-supplied,
+	// per agent, so a CLI flag we have never heard of still works -- including
+	// one added by a future release of that CLI.
+	ExtraArgs []string
+	Model     string // "" = whatever the CLI's own default is
+	Folder    string // "" = no home folder; otherwise the agent's cwd (its own repo) + --add-dir
 	// CLI picks which backend launches this agent: "claude" (default when "") |
 	// "gemini" | "qwen". Per-agent, so the board can run different CLIs in
 	// different folders. Set in the Add/Edit dialog and stored in the roster. Only
@@ -131,10 +135,16 @@ type AgentOptions struct {
 	// used here without agents inheriting each other's conversations.
 	ResumeSession string
 	// FullPermissions runs this agent with the approval gate OFF (claude
-	// --dangerously-skip-permissions): it can act on ANY path and run ANY command
-	// without per-action approval, not just its --add-dir folder. A per-agent OPT-IN
-	// (the "full permissions" checkbox in Add/Edit) -- the fleet's purpose is agents
-	// that DO the work, but unrestricted power stays a deliberate choice, not default.
+	// --dangerously-skip-permissions / qwen --approval-mode yolo): it acts without
+	// asking first. A per-agent OPT-IN, so skipping the prompts stays a deliberate
+	// choice rather than the default.
+	//
+	// It is NOT a sandbox toggle, and leaving it off is NOT a path restriction.
+	// --add-dir ADDS a directory to what the CLI treats as in-scope; it confines
+	// nothing. Verified: an agent with this off read a sibling agent's repo, wrote
+	// outside its own folder, and opened an SSH session to another machine -- the
+	// approval prompts were the only difference. The UI used to describe off as
+	// "scoped to its own folder"; that claim is gone because it was never true.
 	FullPermissions bool
 }
 
@@ -165,13 +175,80 @@ func agentWorkDir(id, folder string) string {
 // selecting one fails LOUDLY rather than launching claude's flags at a different
 // binary (which would misbehave silently). Adding a backend is one more case
 // here plus its output adapter -- not a rewrite. "" defaults to claude.
+// appendExtra puts operator-supplied arguments LAST, so they can override an
+// earlier flag where the CLI honours last-wins, and so the preview shows them
+// in the position they will actually occupy.
+// splitArgs turns the operator's single free-text argument line into an argv
+// slice. Quotes group; whitespace separates.
+//
+// Backslash is NOT an escape character here, deliberately. On Windows the
+// argument most likely to need quoting is a path -- `--add-dir "C:\repos\my
+// folder"` -- and treating `\` as an escape would eat the separators and hand
+// the CLI `C:reposmy folder`. The cost is that a literal quote can't be
+// embedded in an argument; the benefit is that every Windows path a user pastes
+// survives intact. That is the right trade for this field.
+//
+// Args are passed to exec directly, not through a shell, so there is no shell
+// metacharacter to worry about: `;` and `|` arrive as literal characters in an
+// argument, not as operators.
+func splitArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var quote rune // 0 = not inside quotes, else the opening quote character
+	started := false
+
+	flush := func() {
+		if started {
+			out = append(out, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0 // closing quote: the argument continues, e.g. --dir="a b"x
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+			started = true // `""` is a real (empty) argument, so mark it started here
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flush()
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	flush() // an unterminated quote yields the rest as one argument rather than dropping it
+	return out
+}
+
+func appendExtra(args []string, extra []string) []string {
+	for _, a := range extra {
+		if strings.TrimSpace(a) != "" {
+			args = append(args, a)
+		}
+	}
+	return args
+}
+
 func buildCLICommand(opts AgentOptions) (bin string, args []string, err error) {
+	// ExtraArgs are applied HERE, once, rather than inside each backend: a new
+	// backend added later cannot forget to honour them, and the preview endpoint
+	// calls this same function so what is shown is what runs.
 	switch cli := strings.ToLower(strings.TrimSpace(opts.CLI)); cli {
 	case "", "claude":
 		bin, args = claudeCommand(opts)
-		return bin, args, nil
+		return bin, appendExtra(args, opts.ExtraArgs), nil
 	case "qwen":
-		return qwenCommand(opts)
+		bin, args, err = qwenCommand(opts)
+		if err != nil {
+			return "", nil, err
+		}
+		return bin, appendExtra(args, opts.ExtraArgs), nil
 	case "gemini":
 		// INVARIANT when you wire this: every managed agent MUST receive protocolRules()
 		// via this backend's own system-prompt equivalent (claude uses --append-system-prompt;
@@ -202,10 +279,19 @@ func claudeCommand(opts AgentOptions) (bin string, args []string) {
 		args = append(args, "--add-dir", opts.Folder)
 	}
 	if opts.FullPermissions {
-		// Full-permission agent: drop claude's approval gate entirely, so it can act
-		// on ANY path and run ANY command, not just its --add-dir folder. Opt-in per
-		// agent via the Add/Edit "full permissions" checkbox -- the fleet's purpose is
-		// agents that DO the work, but unrestricted power stays a deliberate choice.
+		// Drops claude's APPROVAL PROMPTS. It does not change which paths the agent
+		// can reach.
+		//
+		// This comment used to say the agent could then act "on ANY path ... not
+		// just its --add-dir folder", which implied --add-dir was a boundary. It is
+		// not: --add-dir ADDS a directory to the working set, it does not confine
+		// the agent to it. Verified empirically -- an agent with FullPermissions
+		// FALSE read a sibling agent's repo, wrote to a third directory, read the
+		// user's ~/.ssh, and opened an SSH session to another machine.
+		//
+		// So: OFF means prompts, not containment. Real confinement is a property of
+		// the environment the agent runs in (a container with only its own volume),
+		// not of a flag. Do not restore wording that implies otherwise.
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	// Deliver the board rulebook as an appended system prompt at LAUNCH, not as a
@@ -781,4 +867,15 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// PreviewCommand returns the exact binary and arguments an agent WOULD be
+// launched with, built by the same buildCLICommand the launcher uses. It exists
+// so the UI can show the real command instead of describing it: a hand-written
+// description and a runtime flag can disagree, and this one did -- the settings
+// dialog claimed OFF meant "scoped to its own folder", which was never true.
+//
+// Derive the wording from this; never maintain a parallel sentence.
+func PreviewCommand(opts AgentOptions) (string, []string, error) {
+	return buildCLICommand(opts)
 }

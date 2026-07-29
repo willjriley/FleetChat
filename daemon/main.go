@@ -172,12 +172,13 @@ func main() {
 
 	mux.HandleFunc("/roster", func(w http.ResponseWriter, r *http.Request) {
 		type rosterEntry struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			Role      string `json:"role"`
-			CLI       string `json:"cli"`
-			Dir       string `json:"dir"` // the agent's home folder (its cwd), for the Edit dialog to show
-			FullPerms bool   `json:"full_perms"`
+			ID        string   `json:"id"`
+			Name      string   `json:"name"`
+			Role      string   `json:"role"`
+			CLI       string   `json:"cli"`
+			Dir       string   `json:"dir"` // the agent's home folder (its cwd), for the Edit dialog to show
+			FullPerms bool     `json:"full_perms"`
+			Args      []string `json:"args"` // operator-supplied extra CLI arguments, so Edit can prefill them
 		}
 		out := make([]rosterEntry, 0)
 		for _, a := range reg.All() {
@@ -185,7 +186,7 @@ func main() {
 			if cli == "" {
 				cli = "claude" // the default backend when the roster doesn't set one
 			}
-			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder, FullPerms: a.opts.FullPermissions})
+			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder, FullPerms: a.opts.FullPermissions, Args: a.opts.ExtraArgs})
 		}
 		// reg.All() walks a Go map -- deliberately randomized iteration order by
 		// language design -- so without this sort the sidebar reshuffles on every
@@ -356,11 +357,19 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{"path": cur, "parent": parent, "dirs": dirs})
 	})
 
+	// GET/POST /control/command-preview: the exact argv an agent would launch
+	// with, from the SAME builder the launcher uses. The settings dialog shows
+	// this instead of describing it -- a hand-written description and a runtime
+	// flag can drift apart, and they did: the dialog claimed "Off = scoped to its
+	// own folder", which was never true of --add-dir.
+	mux.HandleFunc("/control/command-preview", handleCommandPreview)
+
 	mux.HandleFunc("/control/add", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Folder    string `json:"folder"`
 			CLI       string `json:"cli"`
 			FullPerms bool   `json:"full_perms"`
+			Args      string `json:"args"` // free-text argument line, split here (see splitArgs)
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -390,14 +399,15 @@ func main() {
 		if cli == "" {
 			cli = "claude" // the default backend; the operator's pick in the Add-agent dialog wins
 		}
+		extra := splitArgs(body.Args)
 		ai := AgentInfo{Name: name, ID: name, Dir: body.Folder, CLI: cli}
-		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, CLI: cli, FullPermissions: body.FullPerms}, ai)
+		a, err := reg.Spawn(name, AgentOptions{Folder: body.Folder, CLI: cli, FullPermissions: body.FullPerms, ExtraArgs: extra}, ai)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		rosterAdd(repoRoot, a.id, body.Folder, cli, body.FullPerms)
+		rosterAdd(repoRoot, a.id, body.Folder, cli, body.FullPerms, extra)
 		announceJoin(board, a.id)
 		log.Printf("[daemon] added agent %q from folder %s", a.id, body.Folder)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "added": a.id})
@@ -503,9 +513,10 @@ func main() {
 
 	mux.HandleFunc("/control/respawn", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Agent     string `json:"agent"`
-			CLI       string `json:"cli"`        // optional: relaunch on a different backend (Edit dialog)
-			FullPerms *bool  `json:"full_perms"` // optional: toggle full-permission mode (nil = leave as-is)
+			Agent     string  `json:"agent"`
+			CLI       string  `json:"cli"`        // optional: relaunch on a different backend (Edit dialog)
+			FullPerms *bool   `json:"full_perms"` // optional: toggle full-permission mode (nil = leave as-is)
+			Args      *string `json:"args"`       // optional: replace the extra-argument line (nil = leave as-is; "" = clear)
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -522,8 +533,11 @@ func main() {
 		if body.FullPerms != nil {
 			opts.FullPermissions = *body.FullPerms
 		}
-		if body.CLI != "" || body.FullPerms != nil {
-			rosterSetRun(repoRoot, id, opts.CLI, opts.FullPermissions) // persist so the change survives a restart
+		if body.Args != nil {
+			opts.ExtraArgs = splitArgs(*body.Args) // "" clears them, which is why this is a pointer
+		}
+		if body.CLI != "" || body.FullPerms != nil || body.Args != nil {
+			rosterSetRun(repoRoot, id, opts.CLI, opts.FullPermissions, opts.ExtraArgs) // persist so the change survives a restart
 		}
 		reg.Kill(id)
 		na, err := reg.Spawn(id, opts, info)
@@ -884,7 +898,7 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 		// (its cwd -- where its OWN CLAUDE.md defines it) and its CLI backend, both
 		// set in the Add/Edit dialog. No per-agent config file, no injected identity.
 		info := AgentInfo{Name: e.Name, ID: e.Name, Dir: e.Dir, CLI: e.CLI}
-		a, err := reg.Spawn(e.Name, AgentOptions{Folder: e.Dir, CLI: e.CLI, FullPermissions: e.FullPerms}, info)
+		a, err := reg.Spawn(e.Name, AgentOptions{Folder: e.Dir, CLI: e.CLI, FullPermissions: e.FullPerms, ExtraArgs: e.Args}, info)
 		if err != nil {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue
@@ -1047,4 +1061,40 @@ func serveViewer(w http.ResponseWriter, r *http.Request, welcome string, subscri
 			_ = onInput(msg.Data)
 		}
 	}
+}
+
+// handleCommandPreview is package-level rather than an inline closure purely so
+// it can be exercised by an httptest test: this endpoint is what the settings
+// dialog's honesty rests on, so "shown == launched" needs a test that goes
+// through the real HTTP path, not just the builder underneath it.
+func handleCommandPreview(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	full := q.Get("full_perms") == "1" || q.Get("full_perms") == "true"
+	// Same splitter the spawn paths use -- a preview that parsed arguments
+	// differently from the launcher would be a confident lie.
+	extra := splitArgs(q.Get("args"))
+	bin, args, err := PreviewCommand(AgentOptions{
+		Folder:          q.Get("dir"),
+		CLI:             q.Get("cli"),
+		FullPermissions: full,
+		ExtraArgs:       extra,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	// The board rulebook is a ~2KB appended system prompt. Show that it is
+	// there and how big, rather than dumping it into a one-line preview --
+	// eliding it is a display choice, so it is labelled as one.
+	shown := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		shown = append(shown, args[i])
+		if args[i] == "--append-system-prompt" && i+1 < len(args) {
+			shown = append(shown, fmt.Sprintf("<board protocol rules, %d chars>", len(args[i+1])))
+			i++
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]any{"bin": bin, "args": shown, "argc": len(args)})
 }

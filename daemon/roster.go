@@ -25,6 +25,12 @@ type RosterEntry struct {
 	// --dangerously-skip-permissions) -- act on any path / run anything, not just
 	// its own folder. Per-agent opt-in from the Add/Edit "full permissions" checkbox.
 	FullPerms bool `json:"full_perms,omitempty"`
+	// Args are EXTRA arguments appended to the launch command for this agent.
+	// The dialog shows the real command and lets the operator add to it, because
+	// what a given CLI supports is not knowable to us and changes as the CLI
+	// changes -- hard-coding a fixed set of toggles dates immediately, and a
+	// description of the command can drift from the command. This cannot.
+	Args []string `json:"args,omitempty"`
 }
 
 // rosterMu serializes the WHOLE read-modify-write-rename cycle in
@@ -154,7 +160,7 @@ func writeRoster(repoRoot string, entries []RosterEntry) error {
 // rosterAdd is idempotent -- adding a name already present is a no-op,
 // matching /control/add's behavior of returning the existing agent rather
 // than erroring.
-func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool) {
+func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool, args []string) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -163,13 +169,13 @@ func rosterAdd(repoRoot, name, dir, cli string, fullPerms bool) {
 			return
 		}
 	}
-	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli, FullPerms: fullPerms}))
+	writeRoster(repoRoot, append(entries, RosterEntry{Name: name, Dir: dir, CLI: cli, FullPerms: fullPerms, Args: args}))
 }
 
 // rosterSetRun updates an existing agent's run config (CLI backend + full-perms)
 // in the durable roster, so a change made in the Edit dialog (which respawns the
 // live process) also survives the next restart. A name not present is a no-op.
-func rosterSetRun(repoRoot, name, cli string, fullPerms bool) {
+func rosterSetRun(repoRoot, name, cli string, fullPerms bool, args []string) {
 	rosterMu.Lock()
 	defer rosterMu.Unlock()
 	entries := readRoster(repoRoot)
@@ -178,6 +184,7 @@ func rosterSetRun(repoRoot, name, cli string, fullPerms bool) {
 		if entries[i].Name == name {
 			entries[i].CLI = cli
 			entries[i].FullPerms = fullPerms
+			entries[i].Args = args
 			changed = true
 		}
 	}

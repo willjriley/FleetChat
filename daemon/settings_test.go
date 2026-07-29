@@ -99,3 +99,31 @@ func TestSavePreservesUnownedKeys(t *testing.T) {
 		t.Fatalf("nested unowned value mangled: %v", got)
 	}
 }
+
+// The extra-argument line has to SURVIVE A RESTART. If it only reaches the live
+// process, an operator sets a flag, the board restarts, and the agent quietly
+// comes back without it -- a silent revert, which is worse than a refusal.
+func TestRosterPersistsExtraArgs(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FLEETCHAT_ROSTER_FILE", filepath.Join(root, "roster.json"))
+
+	args := []string{"--model", "sonnet", `C:\a b`}
+	rosterAdd(root, "tester", root, "claude", false, args)
+
+	got := readRoster(root)
+	if len(got) != 1 || len(got[0].Args) != 3 || got[0].Args[2] != `C:\a b` {
+		t.Fatalf("add did not persist args: %+v", got)
+	}
+
+	// Edit path: a changed line replaces the old one...
+	rosterSetRun(root, "tester", "claude", false, []string{"--verbose"})
+	if got = readRoster(root); len(got) != 1 || len(got[0].Args) != 1 || got[0].Args[0] != "--verbose" {
+		t.Fatalf("setRun did not replace args: %+v", got)
+	}
+	// ...and clearing the field clears them, rather than leaving the old ones in
+	// place while the box shows empty.
+	rosterSetRun(root, "tester", "claude", false, splitArgs(""))
+	if got = readRoster(root); len(got) != 1 || len(got[0].Args) != 0 {
+		t.Fatalf("setRun did not clear args: %+v", got)
+	}
+}

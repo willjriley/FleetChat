@@ -557,11 +557,57 @@
     var fprow=document.createElement("div"); fprow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
     var fpcb=document.createElement("input"); fpcb.type="checkbox"; fpcb.id="fp-cb"; fpcb.checked = editing && !!agent.full_perms;
     var fplab=document.createElement("label"); fplab.setAttribute("for","fp-cb"); fplab.className="set-note"; fplab.style.cursor="pointer";
-    fplab.textContent="Full permissions — act on any path / run anything, no approval prompts";
+    fplab.textContent="Skip approval prompts";
     fprow.appendChild(fpcb); fprow.appendChild(fplab); body.appendChild(fprow);
     var fpnote=document.createElement("div"); fpnote.className="set-note"; fpnote.style.cssText="margin-top:6px;font-size:11px";
-    fpnote.textContent="Off = scoped to its own folder. On = full power (claude --dangerously-skip-permissions / qwen --approval-mode yolo). Takes effect on relaunch.";
+    // Says what the flag does, and nothing else. The previous wording claimed
+    // "Off = scoped to its own folder", which was never true: --add-dir ADDS a
+    // directory, it does not confine anything to one. Off means the CLI asks
+    // before acting; it is not a sandbox. Describing a boundary that isn't there
+    // is worse than describing none, because it stops people asking.
+    fpnote.textContent="Adds --dangerously-skip-permissions (claude) / --approval-mode yolo (qwen). Affects prompting only — neither setting limits which paths the agent can reach. Takes effect on relaunch.";
     body.appendChild(fpnote);
+
+    // --- Extra arguments, and the command that will actually run -------------
+    // Show the real command instead of describing it, and let the operator
+    // append whatever they need: which flags a given CLI supports is not
+    // knowable from here and changes as that CLI changes.
+    var xarow=document.createElement("div"); xarow.style.cssText="margin-top:14px";
+    var xalab=document.createElement("span"); xalab.className="set-note"; xalab.textContent="Extra arguments:";
+    var xain=document.createElement("input"); xain.type="text"; xain.className="voicesel";
+    xain.style.cssText="width:100%;margin-top:6px"; xain.placeholder="e.g. --model sonnet --setting-sources project";
+    xain.value = (editing && agent.args && agent.args.length) ? agent.args.join(" ") : "";
+    xain.title="Appended verbatim to the command below. Takes effect on relaunch.";
+    xarow.appendChild(xalab); xarow.appendChild(xain); body.appendChild(xarow);
+
+    var cmdlab=document.createElement("div"); cmdlab.className="set-note";
+    cmdlab.style.cssText="margin-top:12px;font-size:11px"; cmdlab.textContent="Command that will be run:";
+    var cmdbox=document.createElement("div"); cmdbox.className="set-note";
+    cmdbox.style.cssText="margin-top:4px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto";
+    cmdbox.textContent="…";
+    body.appendChild(cmdlab); body.appendChild(cmdbox);
+
+    // Rendered by the daemon's OWN command builder. Re-implementing it in JS
+    // would create a second source of truth that drifts from the one that runs,
+    // which is the exact failure this change is here to remove.
+    var cmdTimer=null;
+    function refreshCmd(){
+      var dir = editing ? (agent.dir||"") : (inp ? (inp.value||"") : "");
+      var q = "dir="+encodeURIComponent(dir)+"&cli="+encodeURIComponent(selectedCli)+
+              "&full_perms="+(fpcb.checked?"1":"0")+"&args="+encodeURIComponent(xain.value||"");
+      fetch("/control/command-preview?"+q,{headers:headers()})
+        .then(function(r){ return r.json(); })
+        .then(function(d){ cmdbox.textContent = d.error ? ("can't preview: "+d.error) : (d.bin+" "+(d.args||[]).join(" ")); })
+        .catch(function(){ cmdbox.textContent="(preview unavailable)"; });
+    }
+    function queueCmd(){ if(cmdTimer) clearTimeout(cmdTimer); cmdTimer=setTimeout(refreshCmd,150); }
+    fpcb.addEventListener("change", queueCmd);
+    xain.addEventListener("input", queueCmd);
+    if(inp) inp.addEventListener("input", queueCmd);
+    // The CLI picker sets selectedCli in its own listener above; listeners fire
+    // in registration order, so this one sees the new value.
+    clis.forEach(function(c){ clibtns[c.id].addEventListener("click", queueCmd); });
+    refreshCmd();
 
     // --- Model: the --model this agent's CLI uses on its next turn (control mode only) ---
     var mrow=document.createElement("div"); mrow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
@@ -632,6 +678,7 @@
           if(res.s===401){ close(); askToken(); return; }
           if(res.s>=400 || !res.j || res.j.path===undefined){ list.innerHTML=""; err.textContent=(res.j&&res.j.error)||("couldn't open that folder ("+res.s+")"); err.style.display=""; return; }
           curPath=res.j.path; parentPath=res.j.parent||""; inp.value=curPath; up.disabled=!parentPath;
+          queueCmd(); // browsing writes inp.value directly, which fires no "input" event
           list.innerHTML="";
           var dirs=res.j.dirs||[];
           if(!dirs.length){ list.innerHTML="<div class='set-note' style='padding:8px'>(no sub-folders — “Add agent here” uses this folder)</div>"; return; }
@@ -661,9 +708,10 @@
         if(!minp.disabled && model!==mOrig){ // live model override (no restart); only if control mode let us edit it
           fetch("/control/model",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, model:model})}).catch(function(){});
         }
-        if(selectedCli !== (agent.cli||"claude") || fpcb.checked !== !!agent.full_perms){
+        var xargs=(xain.value||"").trim(), xorig=((agent.args||[]).join(" ")).trim();
+        if(selectedCli !== (agent.cli||"claude") || fpcb.checked !== !!agent.full_perms || xargs !== xorig){
           primary.disabled=true; primary.textContent="Relaunching…"; err.style.display="none";
-          fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, cli:selectedCli, full_perms:fpcb.checked})})
+          fetch("/control/respawn",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, cli:selectedCli, full_perms:fpcb.checked, args:xargs})})
             .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
             .then(function(res){
               if(res.s===401){ close(); askToken(); return; }
@@ -676,7 +724,7 @@
         var f=(inp.value||"").trim();
         if(!f){ err.textContent="Pick or type a folder first."; err.style.display=""; return; }
         primary.disabled=true; primary.textContent="Adding…"; err.style.display="none";
-        fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli, full_perms:fpcb.checked})})
+        fetch("/control/add",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({folder:f, cli:selectedCli, full_perms:fpcb.checked, args:(xain.value||"").trim()})})
           .then(function(r){ return r.json().then(function(j){ return {s:r.status,j:j}; }); })
           .then(function(res){
             if(res.s===401){ close(); askToken(); return; }
