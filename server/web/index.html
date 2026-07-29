@@ -565,7 +565,7 @@
     // directory, it does not confine anything to one. Off means the CLI asks
     // before acting; it is not a sandbox. Describing a boundary that isn't there
     // is worse than describing none, because it stops people asking.
-    fpnote.textContent="Adds --dangerously-skip-permissions (claude) / --approval-mode yolo (qwen). Affects prompting only — neither setting limits which paths the agent can reach. Takes effect on relaunch.";
+    fpnote.textContent="Not a sandbox — it changes whether the agent asks first, not what it can reach. Applies on relaunch; watch the command below.";
     body.appendChild(fpnote);
 
     // --- Extra arguments, and the command that will actually run -------------
@@ -617,24 +617,13 @@
     clis.forEach(function(c){ clibtns[c.id].addEventListener("click", queueCmd); });
     refreshCmd();
 
-    // --- Model: the --model this agent's CLI uses on its next turn (control mode only) ---
-    var mrow=document.createElement("div"); mrow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
-    var mml=document.createElement("span"); mml.className="set-note"; mml.textContent="Model:"; mrow.appendChild(mml);
-    var minp=document.createElement("input"); minp.type="text"; minp.className="voicesel"; minp.style.cssText="flex:1;min-width:0"; minp.placeholder="default"; minp.disabled=true;
-    minp.title="CLI --model override (blank = the CLI's own default, no --model flag)";
-    mrow.appendChild(minp); body.appendChild(mrow);
-    var mnote=document.createElement("div"); mnote.className="set-note"; mnote.style.cssText="margin-top:6px;font-size:11px"; body.appendChild(mnote);
-    var mOrig="";
-    Promise.all([
-      fetch("/health",{headers:headers()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; }),
-      fetch("/control/model",{headers:headers()}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; })
-    ]).then(function(res){
-      var controlOn=!!(res[0]&&res[0].control), mdl=(res[1]&&res[1].model)||{};
-      mOrig = editing ? (mdl[aid]||"") : "";
-      minp.value = mOrig;
-      if(controlOn){ minp.disabled=false; mnote.textContent="Blank = the CLI's default model. Takes effect on the agent's next turn — no restart."; }
-      else { mnote.textContent="Model override needs control mode (tray → enable board control)."; }
-    }).catch(function(){ mnote.textContent="(couldn't load the model setting)"; });
+    // NOTE: a "Model" field used to sit here. It wrote to /control/model, which
+    // stored the value in a map nothing ever read -- so it changed nothing, while
+    // its own note promised the change took effect on the agent's next turn.
+    // Removed rather than wired: --model in the Extra arguments field below is
+    // real, goes through the same builder as every other flag, and is visible in
+    // the command box. A second way to set the model that silently did nothing
+    // was worse than no way at all.
 
     // --- Voice picker: SERVER high-quality voices only (or an install prompt) ---
     var vrow=document.createElement("div"); vrow.style.cssText="display:flex;gap:8px;align-items:center;margin-top:14px";
@@ -712,10 +701,6 @@
       var voice = vsel.value; // "" = Auto
       if(editing){
         fetch("/control/voice",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, voice:voice||"off"})}).catch(function(){}); // set the server voice ("off" = Auto)
-        var model=(minp.value||"").trim();
-        if(!minp.disabled && model!==mOrig){ // live model override (no restart); only if control mode let us edit it
-          fetch("/control/model",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:aid, model:model})}).catch(function(){});
-        }
         var xargs=(xain.value||"").trim(), xorig=((agent.args||[]).join(" ")).trim();
         if(selectedCli !== (agent.cli||"claude") || fpcb.checked !== !!agent.full_perms || xargs !== xorig){
           primary.disabled=true; primary.textContent="Relaunching…"; err.style.display="none";
@@ -738,8 +723,6 @@
             if(res.s===401){ close(); askToken(); return; }
             if(res.s>=400){ primary.disabled=false; primary.textContent="Add agent here"; err.textContent=(res.j&&res.j.error)||("error "+res.s); err.style.display=""; return; }
             if(voice && res.j && res.j.added) fetch("/control/voice",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:res.j.added, voice:voice})}).catch(function(){});
-            var model=(minp.value||"").trim();
-            if(model && res.j && res.j.added) fetch("/control/model",{method:"POST",headers:headers({"Content-Type":"application/json"}),body:JSON.stringify({agent:res.j.added, model:model})}).catch(function(){});
             close(); poll();
           })
           .catch(function(){ primary.disabled=false; primary.textContent="Add agent here"; err.textContent="Couldn't reach the server."; err.style.display=""; });
