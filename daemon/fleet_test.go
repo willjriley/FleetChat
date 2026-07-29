@@ -86,6 +86,10 @@ func TestAgentWorkDir(t *testing.T) {
 // the fix for "the real agents never load" on a fresh board.
 func TestSeedRosterFromFleet(t *testing.T) {
 	dir := t.TempDir()
+	// The crew file now lives OUTSIDE the repo by default. Pin it into this
+	// test's temp dir: without this the test would read (and write) the real
+	// machine's roster, which is both a false result and a destructive one.
+	t.Setenv("FLEETCHAT_ROSTER_FILE", filepath.Join(dir, "roster.json"))
 	writeFile(t, filepath.Join(dir, "fleet.local.json"),
 		`{"domain":"demo","lead":"alice","crew":["alice","bob","carol","dave","erin"]}`)
 
@@ -96,7 +100,7 @@ func TestSeedRosterFromFleet(t *testing.T) {
 	// It must have persisted, so the NEXT boot reads the same crew back.
 	persisted := readRoster(dir)
 	if len(persisted) != 5 {
-		t.Fatalf("seed must persist to data/roster.json, read back %d", len(persisted))
+		t.Fatalf("seed must persist to the crew file, read back %d", len(persisted))
 	}
 	if persisted[0].Name != "alice" {
 		t.Fatalf("crew order should be preserved; got %q first", persisted[0].Name)

@@ -20,6 +20,10 @@ type FleetConfig struct {
 	// that should also be a live agent must therefore appear in Crew too.
 	Lead string   `json:"lead"`
 	Crew []string `json:"crew"`
+	// Aliases maps an alternate name onto a crew id ("alice-cli":"alice"), so a
+	// message addressed to a second identity for the same person still reaches
+	// them instead of silently reaching no one. Optional; absent = no aliases.
+	Aliases map[string]string `json:"aliases,omitempty"`
 }
 
 // fleetFile resolves the declared-crew file with the SAME precedence as run.py's

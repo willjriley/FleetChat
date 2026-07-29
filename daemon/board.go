@@ -172,7 +172,25 @@ func (b *Board) Since(id int) []BoardMessage {
 // is called concurrently from the /post HTTP handler AND every agent's own
 // readLoop (via reg.onMessage), so without this a burst of near-simultaneous
 // replies could interleave their writes on disk.
-func (b *Board) Post(sender, text string, tags []string, to []string) BoardMessage {
+// PostResult is what a poster gets back. It embeds the stored BoardMessage so
+// every existing field is unchanged, and adds the thing that was previously
+// computed and then thrown away: WHO THIS ACTUALLY WOKE.
+//
+// The daemon already knew. board.go logged "woke [...]" on every message and
+// returned only the message, so a post that reached nobody looked exactly like
+// one that reached the whole crew. That cost two coordination failures in a
+// single day -- 17 replies to an off-board name, and a finding posted with no
+// recipient that sat unread. Both were careful, correct, and did nothing.
+//
+// Woke is a property of THIS delivery, not of the message, so it is returned
+// rather than persisted -- board.jsonl keeps its existing shape.
+type PostResult struct {
+	BoardMessage
+	Woke    []string `json:"woke"`
+	Warning string   `json:"warning,omitempty"`
+}
+
+func (b *Board) Post(sender, text string, tags []string, to []string) PostResult {
 	agents := b.reg.All()
 	ids := make([]string, len(agents))
 	for i, a := range agents {
@@ -232,13 +250,23 @@ func (b *Board) Post(sender, text string, tags []string, to []string) BoardMessa
 			}
 		}
 	}
+	// Surface the same fact to the SENDER that the debug log below records. An
+	// empty wake-list is not an error -- a broadcast with no crew, a poll, a
+	// deliberate note -- but it must be visible, because silence is what let a
+	// misaddressed message look successful.
+	res := PostResult{BoardMessage: msg, Woke: engaged}
+	if unknown := unknownMentions(text, ids); len(unknown) > 0 {
+		res.Warning = "these @names are not on this board and were not woken: " + strings.Join(unknown, ", ")
+	} else if len(engaged) == 0 {
+		res.Warning = "this message woke nobody -- no @name matched a crew member"
+	}
 	if routeDebug.Load() {
 		// One line per posted message: who sent it, the structured recipient
 		// list it requested, and exactly which agents it woke. Chained across
 		// messages this reconstructs any wake-cycle.
 		log.Printf("[route] msg#%d from %q to=%v woke %v (crew=%v)", msg.ID, sender, to, engaged, ids)
 	}
-	return msg
+	return res
 }
 
 // The board's framing splits into two parts. protocolRules() is the GENERIC

@@ -19,7 +19,10 @@ func TestIsReservedOrKnownAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// "carol" is on the DURABLE roster but NOT live -- the restart-window case.
-	if err := os.WriteFile(filepath.Join(dir, "data", "roster.json"), []byte(`[{"name":"carol"}]`), 0644); err != nil {
+	// The crew file is external now, so write it where the code will look.
+	rp := filepath.Join(dir, "roster.json")
+	t.Setenv("FLEETCHAT_ROSTER_FILE", rp)
+	if err := os.WriteFile(rp, []byte(`[{"name":"carol"}]`), 0644); err != nil {
 		t.Fatal(err)
 	}
 

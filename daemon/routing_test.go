@@ -224,3 +224,47 @@ func sortedCopy(s []string) []string {
 	sort.Strings(c)
 	return c
 }
+
+// --- wake-list: a correctly-composed message that reaches nobody -------------
+// The addressing failures these cover are invisible at the point of sending:
+// the post succeeds, the router behaves, and no one is woken. Two shapes --
+// an @name that is not on the board, and no @name at all.
+
+func TestUnknownMentionsReportsOffBoardName(t *testing.T) {
+	crew := []string{"alice", "bob", "carol"}
+
+	got := unknownMentions("@alice-cli please take a look at this", crew)
+	if len(got) != 1 || got[0] != "alice-cli" {
+		t.Fatalf("expected [alice-cli], got %v", got)
+	}
+	// A real crew member must NOT be reported. A warning that fires on correct
+	// addressing trains people to ignore it, which is worse than no warning.
+	if u := unknownMentions("@bob please take a look", crew); len(u) != 0 {
+		t.Fatalf("crew member reported as unknown: %v", u)
+	}
+	if u := unknownMentions("@all standup in five", crew); len(u) != 0 {
+		t.Fatalf("@all reported as unknown: %v", u)
+	}
+	// Shares addressableText with mergeAtMentions so the warning can never
+	// disagree with the router about what counts as addressing.
+	if u := unknownMentions("write `@alice-cli` in the docs", crew); len(u) != 0 {
+		t.Fatalf("code-span mention reported as a failed address: %v", u)
+	}
+	// One bad name mentioned twice is one problem, not two.
+	if u := unknownMentions("@dave and again @dave", crew); len(u) != 1 {
+		t.Fatalf("expected the repeated name once, got %v", u)
+	}
+}
+
+func TestUnaddressedMessageResolvesToNoRecipients(t *testing.T) {
+	crew := []string{"alice", "bob"}
+
+	if to := mergeAtMentions(nil, "the disk is nearly full on the build host", crew); len(to) != 0 {
+		t.Fatalf("expected no recipients, got %v", to)
+	}
+	// Sanity: the same text WITH an address resolves -- so the assertion above
+	// tests the absence of an address, not a broken parser.
+	if to := mergeAtMentions(nil, "@bob the disk is nearly full", crew); len(to) != 1 || to[0] != "bob" {
+		t.Fatalf("expected [bob], got %v", to)
+	}
+}
