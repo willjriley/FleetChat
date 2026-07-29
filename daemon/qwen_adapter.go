@@ -40,7 +40,24 @@ import (
 // in-conversation path -- so the agent is never left rules-blind, at the cost of
 // that copy landing in the transcript. firstTurn tracks that fallback only.
 // The model is deliberately unset -- qwen uses its own configured default.
+// runQwenAdapter is the real entry point: the daemon re-execs itself in this
+// mode, so its I/O is the process's own stdin/stdout.
 func runQwenAdapter(args []string) {
+	runQwenAdapterIO(args, os.Stdin, os.Stdout)
+}
+
+// runQwenAdapterIO is runQwenAdapter with its two streams injected, so a test
+// can drive a turn and interrupt it in-process.
+//
+// The seam exists for one property that could not otherwise be asserted: an
+// interrupt arriving DURING an in-flight turn has to cancel that turn. The bug
+// it guards was a no-op -- the adapter sat in the turn's output scan and never
+// read stdin, so the interrupt waited in the pipe until the turn ended on its
+// own and then killed nothing. That failure is invisible from outside: the Stop
+// button returns fine and the turn finishes normally a moment later, exactly as
+// though it had worked. Only a test that measures WHEN the turn ended can tell
+// the fix from the bug.
+func runQwenAdapterIO(args []string, stdin io.Reader, stdout io.Writer) {
 	repo, resume, qwenBin, fullPerms, extra := parseQwenAdapterArgs(args)
 	session := resume
 
@@ -57,7 +74,7 @@ func runQwenAdapter(args []string) {
 	// runs to a result. With the system-prompt path working, no prepend is needed.
 	firstTurn := usePrepend
 
-	out := bufio.NewWriter(os.Stdout)
+	out := bufio.NewWriter(stdout)
 	emit := func(line string) {
 		out.WriteString(line)
 		out.WriteByte('\n')
@@ -98,7 +115,7 @@ func runQwenAdapter(args []string) {
 		inClosed bool
 	)
 	go func() {
-		in := bufio.NewScanner(os.Stdin)
+		in := bufio.NewScanner(stdin)
 		in.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for in.Scan() {
 			line := strings.TrimSpace(in.Text())
@@ -123,9 +140,18 @@ func runQwenAdapter(args []string) {
 			if m.Type == "control_request" && m.Request.Subtype == "interrupt" {
 				mu.Lock()
 				if cur != nil && cur.Process != nil {
-					// Kill the in-flight turn; its qs.Scan() then ends and the synthetic
-					// no-result below keeps the daemon's turn accounting matched.
-					_ = cur.Process.Kill()
+					// Kill the whole TREE, not just the direct child.
+					//
+					// On Windows `qwen` resolves to qwen.cmd, so the process actually
+					// started is cmd.exe and the real qwen is its grandchild. Killing
+					// only the direct child leaves that grandchild running AND holding
+					// the stdout pipe -- so qs.Scan() below never ends, no result is
+					// emitted, and the turn hangs on exactly the interrupt that was
+					// supposed to end it. Same shape on POSIX for any shim script.
+					// configureProcessGroup at launch is what makes this correct
+					// rather than accidentally harmless there.
+					killProcessTree(cur.Process.Pid)
+					_ = cur.Process.Kill() // the shim itself, in case it is not in the tree
 				}
 				mu.Unlock()
 				continue
@@ -208,15 +234,36 @@ func runQwenAdapter(args []string) {
 		}
 		stdout, err := qc.StdoutPipe()
 		if err == nil {
+			// cur is published BEFORE Start and the lock is held ACROSS it.
+			//
+			// It used to be assigned AFTER Start returned, which left a window --
+			// child already running, cur still nil -- where an interrupt was
+			// silently dropped: the reader took the lock, saw no current command,
+			// did nothing, and the turn ran to completion as though Stop had never
+			// been pressed. The same no-op the dedicated reader was added to fix,
+			// just narrower and therefore harder to catch by hand.
+			//
+			// Holding the lock across Start closes it without a pending-interrupt
+			// flag: an interrupt arriving mid-launch simply blocks here, and by the
+			// time it proceeds cur is set and its Process is live. Start is a
+			// fork/exec, so the only thing this briefly delays is that reader --
+			// which is precisely the serialization wanted.
+			// Its own process group, so killProcessTree names this child's tree and
+			// nothing else. Without it the group does not exist and the tree kill is
+			// a silent no-op on POSIX.
+			configureProcessGroup(qc)
+			mu.Lock()
+			cur = qc
 			err = qc.Start()
+			if err != nil {
+				cur = nil // never leave a failed launch published as the live turn
+			}
+			mu.Unlock()
 		}
 		if err != nil {
 			emitResult("qwen failed to start: " + err.Error())
 			continue
 		}
-		mu.Lock()
-		cur = qc
-		mu.Unlock()
 
 		sawResult := false
 		qs := bufio.NewScanner(stdout)
