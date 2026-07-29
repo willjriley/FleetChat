@@ -1339,7 +1339,7 @@
 // ============================================================
 // ADDED: Settings screen (view-only) + theme picker.
 // Self-contained IIFE — adds no globals, only READS existing
-// endpoints (/health, /roster, /control/model, /control/tts).
+// endpoints (/health, /roster, /control/tts).
 // ============================================================
 (function(){
   "use strict";
@@ -1424,7 +1424,7 @@
     // Appearance — the theme picker (the only interactive control here).
     body.appendChild(section("Appearance", themePicker()));
 
-    body.appendChild(el("div","set-note","Appearance is set here; folder, CLI, voice, and model live in each agent's Add/Edit dialog (double-click a name). The rest is view-only for now."));
+    body.appendChild(el("div","set-note","Appearance is set here; folder, CLI, voice and launch arguments live in each agent's Add/Edit dialog (double-click a name). The rest is view-only for now."));
 
     backdrop.appendChild(modal);
     backdrop.addEventListener("click", function(e){ if(e.target===backdrop) close(); });

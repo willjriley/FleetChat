@@ -161,11 +161,14 @@ func main() {
 	// board's onStart, so it runs on every Start (initial boot AND "Start board").
 	var bs *boardServer
 
-	// Lightweight in-memory settings: voice assignments and model overrides.
-	// Those two still have no real backend behind them (no --model wiring on
-	// respawn), so they stay in-memory -- good enough for the Settings modal
-	// and slash commands within a session, not a false promise of surviving a
-	// restart.
+	// Lightweight in-memory settings: voice assignments.
+	//
+	// A modelOverride map used to sit here too, fed by a /control/model endpoint
+	// and a "Model" field in the settings dialog. Nothing ever READ it -- the
+	// value was stored, listed back, and applied to nothing, while the dialog's
+	// own note told the operator it took effect on the agent's next turn. All
+	// three are gone; --model belongs in the per-agent arguments field, where it
+	// reaches the real command builder and is visible in the command preview.
 	//
 	// ttsMuted/voiceMode are the EXCEPTION and are now persisted (settings.go).
 	// The original "no server-side TTS speaker" justification for keeping them
@@ -175,7 +178,6 @@ func main() {
 	var settingsMu sync.Mutex
 	ttsMuted, voiceMode := loadVoicePrefs(repoRoot, false, "auto")
 	voiceAssign := map[string]string{}
-	modelOverride := map[string]string{}
 	var speakerSeen time.Time       // last /control/tts heartbeat from a real server-side speaker (e.g. fleet-speaker.bat), see speaker_active()'s 30s TTL in board.py
 	vm := newVoiceManager(repoRoot) // orchestrates the OPTIONAL Python HQ-voice sidecar (download + speaker) -- see voices.go
 
@@ -771,39 +773,6 @@ func main() {
 		}
 		settingsMu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "agent": body.Agent, "voice": body.Voice})
-	})
-
-	mux.HandleFunc("/control/model", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet {
-			settingsMu.Lock()
-			m := make(map[string]string, len(modelOverride))
-			for k, v := range modelOverride {
-				m[k] = v
-			}
-			settingsMu.Unlock()
-			json.NewEncoder(w).Encode(map[string]interface{}{"model": m})
-			return
-		}
-		var body struct{ Agent, Model string }
-		json.NewDecoder(r.Body).Decode(&body)
-		if !validID.MatchString(body.Agent) {
-			w.WriteHeader(400)
-			json.NewEncoder(w).Encode(map[string]string{"error": "bad agent name"})
-			return
-		}
-		settingsMu.Lock()
-		if body.Model == "" {
-			delete(modelOverride, body.Agent)
-		} else {
-			modelOverride[body.Agent] = body.Model
-		}
-		all := make(map[string]string, len(modelOverride))
-		for k, v := range modelOverride {
-			all[k] = v
-		}
-		settingsMu.Unlock()
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "agent": body.Agent, "model": body.Model, "all": all})
 	})
 
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
