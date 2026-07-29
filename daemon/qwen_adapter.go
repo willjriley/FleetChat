@@ -12,6 +12,61 @@ import (
 	"sync"
 )
 
+// startAndPublish launches a turn's child and publishes it as the live command
+// while holding the lock across BOTH, so the two can never be observed apart.
+//
+// This exists as a named function rather than four inline statements because the
+// ordering IS the fix, and inline it had no guard: the window it closes is
+// parent-side and only a few instructions wide (Start returning, then cur being
+// assigned), so no external stimulus can be timed into it. A black-box test of
+// the adapter cannot fail when the order is wrong -- verified by mutation test,
+// the end-to-end interrupt test passes 10/10 against the broken ordering. Pulling
+// it out gives the property a seam a test can hold it to directly.
+//
+// startFn is the seam: production passes qc.Start, and a test passes a stand-in
+// that reports whether the lock is held while it runs. It is not a test-only
+// branch in shipped code -- there is exactly one production caller and no flag,
+// env var or build tag selects anything else.
+//
+// A failed launch is unpublished before returning, so a failure never leaves a
+// dead command visible to the interrupt path as the live turn.
+func startAndPublish(mu *sync.Mutex, cur **exec.Cmd, qc *exec.Cmd, startFn func() error) error {
+	mu.Lock()
+	defer mu.Unlock()
+	*cur = qc
+	if err := startFn(); err != nil {
+		*cur = nil
+		return err
+	}
+	return nil
+}
+
+// unpublishThenWait is the closing half of startAndPublish: it retires the live
+// command BEFORE reaping it, never after.
+//
+// Wait releases the pid back to the kernel. An interrupt landing between the reap
+// and the unpublish would take the lock, find a stale cur, and hand
+// killProcessTree a pid the kernel no longer owns. That is not the benign no-op
+// it looks like -- killProcessTree takes a RAW int and signals an entire process
+// GROUP (kill(-pid) / taskkill /T /F), bypassing the "process already finished"
+// guard that Process.Kill() gives for free. On Windows, where this daemon
+// actually runs, pids recycle aggressively, so the victim could be an unrelated
+// live process tree.
+//
+// Unpublishing first closes the window from both sides: while cur is nil the
+// interrupt path does nothing, and until Wait returns the pid is still held by an
+// unreaped zombie, so it cannot have been reassigned to anyone else.
+//
+// Same seam as startAndPublish, for the same reason -- the ordering IS the fix
+// and the window is too narrow to hit through the adapter's stdin, so waitFn lets
+// a test observe that cur is already retired by the time the reap runs.
+func unpublishThenWait(mu *sync.Mutex, cur **exec.Cmd, waitFn func() error) error {
+	mu.Lock()
+	*cur = nil
+	mu.Unlock()
+	return waitFn()
+}
+
 // runQwenAdapter is a HELD-OPEN front-end for the one-shot Qwen-Code CLI, so the
 // daemon can drive a qwen agent over the SAME stdin/stdout stream-json contract it
 // uses for claude -- with ZERO spawn-per-turn logic in the daemon core. The daemon
@@ -252,13 +307,7 @@ func runQwenAdapterIO(args []string, stdin io.Reader, stdout io.Writer) {
 			// nothing else. Without it the group does not exist and the tree kill is
 			// a silent no-op on POSIX.
 			configureProcessGroup(qc)
-			mu.Lock()
-			cur = qc
-			err = qc.Start()
-			if err != nil {
-				cur = nil // never leave a failed launch published as the live turn
-			}
-			mu.Unlock()
+			err = startAndPublish(&mu, &cur, qc, qc.Start)
 		}
 		if err != nil {
 			emitResult("qwen failed to start: " + err.Error())
@@ -284,10 +333,7 @@ func runQwenAdapterIO(args []string, stdin io.Reader, stdout io.Writer) {
 				}
 			}
 		}
-		_ = qc.Wait()
-		mu.Lock()
-		cur = nil
-		mu.Unlock()
+		_ = unpublishThenWait(&mu, &cur, qc.Wait)
 		if !sawResult {
 			emitResult("qwen turn ended with no result")
 		}
