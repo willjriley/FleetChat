@@ -339,5 +339,6 @@ func protocolRules() string {
 		"- close:  {\"op\":\"close\",\"id\":\"tN\",\"summary\":\"...\"}\n" +
 		"- list:   GET /threads  -> {\"threads\":[...]}\n" +
 		"Example: curl -s -X POST http://127.0.0.1:" + daemonPort + "/threads -H 'X-Fleet-Client: agent' " +
-		"-H 'Content-Type: application/json' -d '{\"op\":\"create\",\"title\":\"...\",\"agent\":\"<you>\"}'."
+		"-H 'Content-Type: application/json' -d '{\"op\":\"create\",\"title\":\"...\",\"agent\":\"<you>\"}'." +
+		followUpRules
 }

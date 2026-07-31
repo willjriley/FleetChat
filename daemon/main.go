@@ -79,9 +79,25 @@ func main() {
 	// diagnostics this tee exists to surface under `start /min`) land in
 	// data/daemon.log too, not just stderr. Resolving repoRoot has no side effects
 	// and doesn't depend on the single-instance kill.
+	// Resolve repoRoot from the BINARY's own location, not the launch cwd. The
+	// daemon lives in <repoRoot>/daemon/, so its grandparent is repoRoot. This is
+	// what makes the daemon cwd-INDEPENDENT: when a process is spawned without a cwd
+	// set (a tray self-restart, Win32_Process.Create with no working-dir arg, a
+	// scheduled task) it inherits C:\WINDOWS\System32, and filepath.Abs("..") would
+	// resolve repoRoot to C:\WINDOWS -- every repo path (data/, server/web) then
+	// lands there and fails (board.jsonl unwritable, the web UI 404s / "site never
+	// loads"). Anchoring to os.Executable() kills that whole class of breakage. Fall
+	// back to cwd-relative only if the exe isn't in a real checkout (e.g. go test's
+	// temp binary), detected by the absence of server/web next to the candidate.
 	repoRoot, err := filepath.Abs("..")
 	if err != nil {
 		log.Fatalf("can't resolve repo root: %s", err)
+	}
+	if exe, eerr := os.Executable(); eerr == nil {
+		cand := filepath.Dir(filepath.Dir(exe))
+		if _, serr := os.Stat(filepath.Join(cand, "server", "web")); serr == nil {
+			repoRoot = cand
+		}
 	}
 	// Tee the daemon log to data/daemon.log (in addition to stderr) so it's ALWAYS
 	// inspectable no matter how the daemon was launched: fleet-up.bat's `start /min`
@@ -569,7 +585,15 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "id": na.id})
+		// Report the REAL pid. The client has always printed res.j.pid, but this
+		// response only carried {ok,id} -- so every successful respawn said
+		// "pid undefined", which reads like a half-failure. Guarded because a
+		// process can be nil if the spawn raced.
+		pid := 0
+		if na.cmd != nil && na.cmd.Process != nil {
+			pid = na.cmd.Process.Pid
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "id": na.id, "pid": pid})
 	})
 
 	// Soft-interrupt: cancel an agent's in-flight turn WITHOUT the respawn's kill+relaunch.

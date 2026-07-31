@@ -14,6 +14,19 @@ import (
 	"time"
 )
 
+// maxAgentLineBytes caps a single line on an agent's stdout/stderr.
+//
+// Was 1MB on stdout and UNSET on stderr (Go's 64KB default). On 2026-07-31 an
+// agent posted a message whose JSON line exceeded 1MB; the scanner returned
+// "token too long", the read loop ended, and because that was handled as though
+// the process had died, the agent sat listed-as-alive for 50 minutes while the
+// board cheerfully reported six successful wakes and got no replies.
+//
+// 4MB matches what the qwen adapter already used, so the two CLI paths no longer
+// disagree about how long a line may be -- the drift is what let this hide.
+// A cap is still required: unbounded would let one malformed line exhaust memory.
+const maxAgentLineBytes = 4 * 1024 * 1024
+
 // NormalizedEvent is the daemon's OWN internal shape -- deliberately not just
 // Claude's raw event names, so a later Gemini/Qwen/Codex adapter can produce
 // this exact same shape from its own (differently-named) stream-json events.
@@ -85,6 +98,14 @@ type Agent struct {
 	// still tearing down. Atomic rather than mutex-guarded to avoid nesting a
 	// second lock inside the registry's.
 	dying atomic.Bool
+	// readDead trips the INSTANT this agent's stdout reader stops, independent of
+	// whether the process has been reaped yet. That gap is the whole 2026-07-31
+	// bug: the reader died on a "token too long", the child stayed alive, so
+	// cmd.Wait() blocked and `exited` never closed -- and sendPrompt, which gates
+	// on `exited`, went on reporting success. Six board wakes were delivered to a
+	// stdout nobody was reading, and the board correctly reported "woke [alice]"
+	// because the write genuinely succeeded. Writable is not the same as reachable.
+	readDead atomic.Bool
 	// pendingPrivate is a FIFO queue, not a single flag: this process can have
 	// MORE than one turn in flight (a board reply and a private reply sent
 	// close together both queue on the same stdin), and "result" events
@@ -443,13 +464,40 @@ func NewAgent(id string, opts AgentOptions) (*Agent, io.Reader, error) {
 	// would grow unbounded.
 	go func() {
 		defer close(a.stderrDone) // readLoop waits on this before cmd.Wait()
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Printf("[agent %s stderr] %s", id, scanner.Text())
-		}
+		pumpStderr(id, stderr)
 	}()
 
 	return a, stdout, nil
+}
+
+// pumpStderr logs the child's stderr and then, whatever happens, consumes the rest
+// of the pipe until EOF.
+//
+// The drain is the load-bearing part and is why this is a named function rather
+// than an inline goroutine body: it can be tested against an over-cap line with no
+// child process. If this returns while the child is alive, NOBODY reads the stderr
+// pipe again. The child blocks on its next stderr write once the OS buffer fills,
+// so it stops writing stdout, so readLoop's Scan() blocks forever with no EOF and
+// no error -- readDead never gets set and sendPrompt keeps acking wakes into a
+// process that cannot answer. That is the silent-deafness incident arriving through
+// the stderr door, and a single over-cap line reproduces it even with
+// maxAgentLineBytes raised, because the cap only moves the threshold.
+//
+// Draining also means the caller's stderrDone closes at a true EOF, which is the
+// precondition readLoop's reap ordering actually assumes.
+func pumpStderr(id string, stderr io.Reader) {
+	scanner := bufio.NewScanner(stderr)
+	// Explicit buffer. The default is 64KB per line, so one long stderr line (a
+	// stack trace, a dumped payload) ends this loop early with "token too long".
+	scanner.Buffer(make([]byte, 0, 64*1024), maxAgentLineBytes)
+	for scanner.Scan() {
+		log.Printf("[agent %s stderr] %s", id, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("[agent %s stderr] read ended with error: %s -- "+
+			"draining the pipe so the child cannot block on a full stderr buffer", id, err)
+	}
+	_, _ = io.Copy(io.Discard, stderr)
 }
 
 // Start begins reading the subprocess's output. Call it only after every
@@ -488,8 +536,22 @@ func (a *Agent) readLoop(stdout io.Reader) {
 			a.onExit()
 		}
 	}()
+
+	// THE POSITION IS THE FIX -- do not tidy this up to the top of the function.
+	//
+	// Deafness is a property of "this function is no longer running", so the flag is
+	// bound to the function's exit rather than to reaching the end of the scan loop:
+	// a panic in route() unwinds straight past the loop's tail and skips the explicit
+	// store below. But defers run LIFO, so registering this one FIRST would run it
+	// LAST -- behind the recovery defer above, which on the panic path calls
+	// cmd.Wait() on a child that nothing killed and blocks forever. The store would
+	// then never execute at all: readDead stays false, exited never closes, BOTH
+	// sendPrompt gates are dead at once, and the board goes on acking wakes into an
+	// agent that cannot answer. Registering it AFTER the recovery defer makes it run
+	// FIRST during the unwind, before anything that can block.
+	defer a.readDead.Store(true)
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // long lines are normal here
+	scanner.Buffer(make([]byte, 0, 64*1024), maxAgentLineBytes)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -502,14 +564,41 @@ func (a *Agent) readLoop(stdout io.Reader) {
 		}
 		a.route(raw, line)
 	}
-	// The process is gone -- whether it crashed, hit an unrecoverable auth
-	// error, or was deliberately killed, stdout closing means it's not
-	// coming back. Tell viewers (a real event, not silence -- the same
-	// dead-man's-switch principle tonight's other work leaned on all
-	// night) and make sure the registry's bookkeeping actually reflects
-	// that, instead of listing a dead agent as alive indefinitely.
+	// Why the loop ended decides what has to happen next, and conflating the two
+	// cases cost the fleet 50 minutes of silent failure on 2026-07-31.
+	//
+	// EOF means the process really is gone -- crash, auth failure, or a kill --
+	// and the reap below collects it immediately.
+	//
+	// A scanner ERROR is different and used to be handled as though it were the
+	// same. "bufio.Scanner: token too long" ends the loop while the child is
+	// STILL ALIVE AND HEALTHY: one oversized JSON line overflowed the buffer.
+	// Falling through to cmd.Wait() then blocks forever on a living process, so
+	// the deferred clearTyping/onExit never run, the registry goes on listing the
+	// agent as alive, and the board keeps accepting wakes for it -- delivering to
+	// a stdout nobody is reading. That is exactly what happened: six successful
+	// wakes, zero replies, no error surfaced anywhere.
+	//
+	// A stream error is unrecoverable regardless -- we have lost framing on the
+	// protocol and cannot resynchronise mid-stream -- so the honest response is
+	// to KILL the child deliberately and let the reap proceed on a process that
+	// is genuinely dying. Loud and dead beats quietly deaf.
+	// Mark unreachable FIRST: everything below (the kill, the stderr wait, the
+	// reap) can take time or block, and for that whole window the agent must
+	// already be refusing turns rather than silently swallowing them.
+	//
+	// NOT redundant with the `defer a.readDead.Store(true)` at the top. That defer
+	// is the correctness backstop -- it covers exit paths that never reach here,
+	// such as a panic in route(). This store is the TIMELY one: a defer only runs
+	// once the function is actually leaving, i.e. after the reap below, which is
+	// exactly the window that must not ack. Keep both.
+	a.readDead.Store(true)
 	if err := scanner.Err(); err != nil {
-		log.Printf("[agent %s] read loop ended with error: %s", a.id, err)
+		log.Printf("[agent %s] read loop ended with error: %s -- stream desynchronised; "+
+			"killing the process so it is reaped and marked dead rather than lingering "+
+			"as a live-but-unread agent", a.id, err)
+		killProcessTree(a.cmd.Process.Pid)
+		_ = a.cmd.Process.Kill()
 	} else {
 		log.Printf("[agent %s] read loop ended (EOF)", a.id)
 	}
@@ -665,6 +754,13 @@ func (a *Agent) Interrupt() error {
 // queue (recipient genuinely stuck) is reported so board.Post can log "not woken"
 // rather than the whole fan-out hanging. A gone process is likewise a clean error.
 func (a *Agent) sendPrompt(text string, private bool) error {
+	// Checked BEFORE the queue: an agent whose reader has died can still accept a
+	// write (stdin is open until the process actually dies), which is exactly how a
+	// dead agent kept reporting successful wakes. Refusing here makes the board's
+	// existing "SendPrompt failed -> not woken" path tell the truth.
+	if a.readDead.Load() {
+		return fmt.Errorf("agent %q is not reading its output stream (reader died) -- not woken", a.id)
+	}
 	select {
 	case a.sendCh <- sendJob{text: text, private: private}:
 		return nil
