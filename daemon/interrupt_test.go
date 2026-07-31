@@ -139,7 +139,7 @@ func TestStartAndPublishUnpublishesFailedLaunch(t *testing.T) {
 	}
 }
 
-// TestUnpublishThenWaitRetiresBeforeReaping guards MED-1 (SHIELD, 2026-07-29):
+// TestUnpublishThenWaitRetiresBeforeReaping guards MED-1 (security review, 2026-07-29):
 // the live command must be retired BEFORE Wait reaps it, so an interrupt can
 // never hand killProcessTree a pid the kernel has already released -- a raw-int
 // process-GROUP kill against a pid Windows may have recycled onto something else.

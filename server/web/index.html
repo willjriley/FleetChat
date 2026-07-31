@@ -89,7 +89,8 @@
      source order wins at equal specificity. Dark-family themes get the dark chip variant, light-
      family the light one. A new palette added later needs one selector added to the right list. */
   html[data-theme="dark"] .mchip, html[data-theme="dusk"] .mchip, html[data-theme="harbor"] .mchip,
-  html[data-theme="autumn"] .mchip, html[data-theme="forest"] .mchip, html[data-theme="ocean"] .mchip{
+  html[data-theme="autumn"] .mchip, html[data-theme="forest"] .mchip, html[data-theme="ocean"] .mchip,
+  html[data-theme="ember"] .mchip{
     background:hsla(var(--mc-h,210),60%,58%,.22);color:hsl(var(--mc-h,210),80%,74%)}
   html[data-theme="light"] .mchip, html[data-theme="sepia"] .mchip, html[data-theme="rose"] .mchip{
     background:hsla(var(--mc-h,210),65%,45%,.16);color:hsl(var(--mc-h,210),58%,38%)}
@@ -182,6 +183,11 @@
     --bg:#0c1622; --panel:#13202f; --ink:#dce7f2; --muted:#7f93a8;
     --line:#1e2f42; --accent:#3d92d6; --chip:#182636; --codebg:#0a1220;
     --t-str:#7fd6b0; --t-com:#7b8ea3; --t-num:#e0b57a; --t-kw:#79b0e6;
+  }
+  html[data-theme="ember"]{ /* OpenClaw-ish -- near-black ground, hot crimson accent */
+    --bg:#140b0c; --panel:#1e1113; --ink:#f3e3e4; --muted:#b08a8d;
+    --line:#371f22; --accent:#e5484d; --chip:#261517; --codebg:#0f0809;
+    --t-str:#e88f92; --t-com:#8f7376; --t-num:#e0a45c; --t-kw:#ff6b6b;
   }
   html[data-theme="rose"]{ /* soft blossom -- light */
     --bg:#faf0f3; --panel:#fff8fa; --ink:#3b2c31; --muted:#977c84;
@@ -758,14 +764,20 @@
     {cmd:"/glance",   desc:"Show/hide the quick-glance task panel"},
     {cmd:"/fullscreen", desc:"Toggle fullscreen mode on/off"},
     {cmd:"/task",     desc:"Create a task card: /task <title>"},
-    {cmd:"/restart",  desc:"Restart the server and the whole crew (flushes stuck agents)"},
+    {cmd:"/restart",  desc:"Bare = restart server + whole crew. With a name (/restart @alice) = that ONE agent"},
     {cmd:"/shutdown", desc:"Stop the server and the whole crew"},
     {cmd:"/debug",    desc:"Toggle routing debug log (who woke whom -> server log)"},
+    {cmd:"/theme",    desc:"Switch theme without opening settings (/theme ember)"},
     {cmd:"/help",     desc:"Show these commands"}
   ];
   // Commands that take arguments: picking them from the palette leaves a trailing space so you
   // can type the args right away (generalized from the old /poll-only special case).
-  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/task":1};
+  // /theme is here even though it is VALID WITH NO ARGUMENT. The trailing space is
+  // what lets you ESCAPE the palette: slashRender matches /^\/([a-z]*)$/, so a bare
+  // "/theme" re-opens the palette on every keystroke and Enter just re-chooses it --
+  // an inescapable loop. The space breaks the match. handleSlash trims, so the no-arg
+  // branch still fires. Removing it from here looked like a tidy-up and trapped the input.
+  var ARGCMDS={"/poll":1,"/find":1,"/setvoice":1,"/respawn":1,"/restart":1,"/task":1,"/theme":1};
   var sBox=null, sItems=[], sSel=0;
   function slashOpen(){ return !!sBox; }
   function slashClose(){ if(sBox){ sBox.remove(); sBox=null; } sItems=[]; sSel=0; }
@@ -820,9 +832,31 @@
     var mVoice=text.match(/^\/setvoice\s+([a-z0-9_-]+)\s+(\S+)$/);
     if(mVoice){ clearInput(); cmdSetVoice(mVoice[1], mVoice[2]); return true; }
     if(/^\/setvoice\b/.test(text)){ clearInput(); localNote("<p><b>/setvoice</b> — usage: <code>/setvoice &lt;agent&gt; &lt;voice&gt;</code> &nbsp;(voice <code>off</code> clears it; see <code>/voices</code>)</p>"); return true; }
-    var mResp=text.match(/^\/respawn\s+([a-z0-9_-]+)$/);
-    if(mResp){ clearInput(); cmdRespawn(mResp[1]); return true; }
-    if(/^\/respawn\b/.test(text)){ clearInput(); localNote("<p><b>/respawn</b> — usage: <code>/respawn &lt;agent&gt;</code></p>"); return true; }
+    // /respawn <agent> and /restart @agent are the SAME operation. Two spellings on
+    // purpose: "/restart @alice" is what an operator reaches for, and bare "/restart"
+    // already meant restart-the-whole-SERVER -- a genuinely different, much larger
+    // action. Accepting the @ form here means the obvious guess does the small thing
+    // rather than silently bouncing the entire crew.
+    var mResp=text.match(/^\/(?:respawn|restart)\s+@?([a-z0-9_-]+)$/i);
+    if(mResp){ clearInput(); cmdRespawn(mResp[1].toLowerCase()); return true; }
+    if(/^\/respawn\b/.test(text)){ clearInput(); localNote("<p><b>/respawn</b> — usage: <code>/respawn &lt;agent&gt;</code> (or <code>/restart @agent</code>)</p>"); return true; }
+    // A /restart whose argument did NOT parse must not fall through to the generic
+    // post path: "/restart @alice oops" would be sent to the board as ordinary chat,
+    // which @-mentions alice and WAKES her with the literal command text. Requires
+    // whitespace+arg, so bare /restart still reaches the whole-crew handler below.
+    if(/^\/restart\s+\S/.test(text)){ clearInput(); localNote("<p><b>/restart</b> — usage: <code>/restart @agent</code> for one agent, or bare <code>/restart</code> for the whole crew</p>"); return true; }
+    // /theme [id] -- switch palette without opening settings; no arg lists them.
+    var mTheme=text.match(/^\/theme\s+([a-z]+)\s*$/i);
+    if(mTheme){
+      var want=mTheme[1].toLowerCase();
+      var api=window.fleetThemes;
+      if(!api){ localNote("<p>Theme picker not loaded yet — try again in a moment.</p>"); return true; }
+      var hit=api.list.filter(function(t){ return t.id===want; });
+      clearInput();
+      if(!hit.length){ localNote("<p>⚠️ No theme <b>"+esc(want)+"</b>. Try: "+api.list.map(function(t){return "<code>"+esc(t.id)+"</code>";}).join(", ")+"</p>"); return true; }
+      api.apply(want); localNote("<p>Theme → <b>"+esc(hit[0].name)+"</b></p>"); return true;
+    }
+    if(/^\/theme\b/.test(text)){ clearInput(); var a2=window.fleetThemes||{list:[]}; localNote("<p><b>/theme</b> — usage: <code>/theme &lt;id&gt;</code><br>"+a2.list.map(function(t){return "<code>"+esc(t.id)+"</code>";}).join(" · ")+"</p>"); return true; }
     return false;
   }
   function clearInput(){ $("#text").value=""; renderChips(); slashClose(); }
@@ -1355,7 +1389,8 @@
     {id:"autumn", name:"Autumn", bg:"#1c1410", accent:"#d9822b"},
     {id:"forest", name:"Forest", bg:"#0f150e", accent:"#5fb15f"},
     {id:"ocean",  name:"Ocean",  bg:"#0c1622", accent:"#3d92d6"},
-    {id:"rose",   name:"Rose",   bg:"#faf0f3", accent:"#c24a6e"}
+    {id:"rose",   name:"Rose",   bg:"#faf0f3", accent:"#c24a6e"},
+    {id:"ember",  name:"Ember",  bg:"#140b0c", accent:"#e5484d"}
   ];
   function ls(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
   function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
@@ -1367,6 +1402,11 @@
     lsSet(THEME_KEY, id||"system");
   }
   applyTheme(getTheme());   // keep the live attribute in step with storage (head script did the pre-paint apply)
+  // Deliberate seam: the chat IIFE (block 2) cannot see THEMES/applyTheme -- they are
+  // private to THIS closure, which is why "/theme ember" threw a ReferenceError and did
+  // nothing while the settings picker worked fine. Export the two things a caller needs
+  // rather than hoisting the whole module to global scope.
+  window.fleetThemes = { list: THEMES, apply: applyTheme };
 
   function el(tag,cls,txt){ var d=document.createElement(tag); if(cls) d.className=cls; if(txt!=null) d.textContent=txt; return d; }
   function row(k,v){ var r=el("div","set-row"); r.appendChild(el("span","k",k)); r.appendChild(el("span","v",v==null?"—":String(v))); return r; }
