@@ -111,11 +111,48 @@ def agent_ids():
         return set()
 
 
+_last_mute = None          # last value we actually READ from the board
+_last_mute_at = 0.0        # when we read it, for the polling-path TTL below
+
+
+def is_muted_cached(ttl=1.0):
+    """is_muted() with a short TTL, for callers that poll.
+
+    play() polls should_stop() every 0.2s so a mute stops audio promptly. But
+    is_muted() is an HTTP GET against the board, so an uncached poll fires ~300
+    requests at the daemon per 60s clip (per review). The process poll stays at
+    0.2s -- only the board round-trip is throttled, so a mute still takes effect
+    within about a second while board load drops ~5x.
+    """
+    global _last_mute, _last_mute_at
+    if _last_mute is not None and (time.time() - _last_mute_at) < ttl:
+        return _last_mute
+    v = is_muted()
+    _last_mute_at = time.time()
+    return v
+
+
 def is_muted():
+    """Fail SAFE, not open.
+
+    This used to `return False` on any exception, so a single transient board hiccup
+    read as "not muted" and the speaker talked over a mute the operator had pressed.
+    For a mute control the safe direction is silence.
+
+    But a hard `return True` on error is also wrong -- a brief blip would silence the
+    speaker permanently even while unmuted. So: remember the last value we genuinely
+    read, and reuse it when the board is unreachable. Only if we have NEVER managed a
+    read do we assume muted, because at that point we cannot know the operator's
+    intent and speaking would be the irreversible choice.
+    """
+    global _last_mute
     try:
-        return bool(_get_json("/control/tts").get("muted"))
+        global _last_mute_at
+        _last_mute = bool(_get_json("/control/tts").get("muted"))
+        _last_mute_at = time.time()
+        return _last_mute
     except Exception:
-        return False
+        return True if _last_mute is None else _last_mute
 
 
 def clean(t):
@@ -128,24 +165,53 @@ def clean(t):
     return t.strip()[:600]
 
 
-def play(samples, sr):
+def play(samples, sr, should_stop=None):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         p = tmp.name
     try:
         sf.write(p, samples, sr)
         if sys.platform == "win32":
-            subprocess.run(["powershell", "-NoProfile", "-Command",
-                            "(New-Object Media.SoundPlayer '%s').PlaySync()" % p], capture_output=True, timeout=90)
+            cands = [["powershell", "-NoProfile", "-Command",
+                      "(New-Object Media.SoundPlayer '%s').PlaySync()" % p]]
         elif sys.platform == "darwin":
-            subprocess.run(["afplay", p], capture_output=True, timeout=90)
+            cands = [["afplay", p]]
         else:  # linux: first available of paplay / aplay / ffplay
-            for player in (["paplay", p], ["aplay", "-q", p],
-                           ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", p]):
-                try:
-                    subprocess.run(player, capture_output=True, timeout=90, check=True)
-                    break
-                except Exception:
-                    continue
+            cands = [["paplay", p], ["aplay", "-q", p],
+                     ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", p]]
+        for player in cands:
+            try:
+                proc = subprocess.Popen(player, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                continue                      # player not installed -- try the next
+            deadline = time.time() + 90
+            while proc.poll() is None:
+                # Poll rather than block, so a mute pressed DURING playback stops the
+                # audio instead of being noticed only after it finishes.
+                if should_stop is not None and should_stop():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=2)   # reap, or it lingers as a zombie
+                        except Exception:
+                            pass
+                    return
+                if time.time() > deadline:
+                    # RETURN, do not break. Breaking left returncode None, so the
+                    # success check below failed and playback fell through to the NEXT
+                    # backend -- replaying the same clip up to 3x90s on Linux. Also
+                    # wait() after kill, or each one leaks a zombie. (per review)
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
+                    return
+                time.sleep(0.2)
+            if proc.returncode == 0:
+                break                         # played successfully
     finally:
         try:
             os.unlink(p)
@@ -198,7 +264,9 @@ def main():
                     pass
                 try:
                     samples, sr = kokoro.create(txt, voice=vmap.get(s) or ENGLISH[0], speed=1.0, lang="en-us")
-                    play(samples, sr)
+                    if is_muted():            # muted DURING synthesis -- do not start speaking
+                        continue
+                    play(samples, sr, should_stop=is_muted_cached)
                 finally:
                     try:
                         _post_json("/typing", {"agent": s, "on": False, "what": "speak"})

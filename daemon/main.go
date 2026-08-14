@@ -39,6 +39,11 @@ var kokoroVoices = []string{
 	"bm_george", "bm_daniel", "bm_lewis",
 }
 
+// maxBackfill bounds what a FRESH client receives from /messages?since=0. Kept a
+// little above the client's own DOM cap so a reload still fills the visible
+// scrollback without shipping the entire history.
+const maxBackfill = 500
+
 func main() {
 	// Log to a FILE as well as the console. Until now the daemon logged only to
 	// its console window, so every "failed to bootstrap" and every "SendPrompt
@@ -240,8 +245,22 @@ func main() {
 		if s := r.URL.Query().Get("since"); s != "" {
 			fmt.Sscanf(s, "%d", &since)
 		}
+		// CAP THE BACKFILL. A fresh page has lastId=0, so it asks for since=0 and used
+		// to receive the ENTIRE board -- 8,153 messages / 6 MB of JSON by 2026-08-12,
+		// growing daily. Parsing that and building a DOM node per message killed the
+		// renderer outright (STATUS_ACCESS_VIOLATION). The client now also trims its
+		// DOM, but it should not have to download the whole history to throw most of
+		// it away.
+		//
+		// Only the initial backfill is capped. An incremental poll (since>0) is
+		// unbounded on purpose: it returns just what arrived since the last poll, and
+		// silently dropping any of that would lose messages.
+		msgs := board.Since(since)
+		if since == 0 && len(msgs) > maxBackfill {
+			msgs = msgs[len(msgs)-maxBackfill:]
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"messages": board.Since(since)})
+		json.NewEncoder(w).Encode(map[string]interface{}{"messages": msgs})
 	})
 
 	mux.HandleFunc("/post", func(w http.ResponseWriter, r *http.Request) {
