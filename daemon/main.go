@@ -167,7 +167,26 @@ func main() {
 			// content is a no-op wake anyway).
 			return
 		}
-		board.Post(agentID, body, nil, to)
+		// THREADING: rejoin the conversation this agent was woken into, so a
+		// reply reaches everyone in it without the agent naming them. Before
+		// this, a reply with no >>to: directive addressed NOBODY -- an agent
+		// that simply answered the question was, structurally, talking to
+		// itself.
+		thread := 0
+		if a, ok := reg.Get(agentID); ok {
+			thread = a.wakeThreadID()
+		}
+		// An EXPLICIT empty directive (">>to:" with nothing after it) has always
+		// meant "deliberately nobody". Auto-addressing must not override an
+		// explicit intent, so it maps to a quiet post: the reply still joins the
+		// thread and is still visible, it just wakes no one. That also hands
+		// agents the acknowledge-without-waking path using a directive they
+		// already know, instead of a new one to remember.
+		//
+		// nil (no directive at all) is the DIFFERENT case -- silence about
+		// routing, which is exactly what auto-addressing is for.
+		quiet := to != nil && len(to) == 0
+		board.PostMsg(PostOpts{Sender: agentID, Text: body, To: to, Thread: thread, Quiet: quiet})
 	}
 	threads := NewThreadStore(filepath.Join(repoRoot, "data", "threads.json"))
 
@@ -240,6 +259,24 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{"roster": out})
 	})
 
+	// GET /conversation/members?id=N -> who is currently in conversation N.
+	//
+	// NB the path deliberately says "conversation", not "thread": /threads is
+	// already the KANBAN CARD api (ThreadStore). Two different things called
+	// "thread" on two routes one character apart is a trap for whoever reads
+	// this next, so the message-level concept gets its own word in the URL even
+	// though the JSON field stays `thread`.
+	mux.HandleFunc("/conversation/members", func(w http.ResponseWriter, r *http.Request) {
+		id := 0
+		fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
+		w.Header().Set("Content-Type", "application/json")
+		members := board.Members(id)
+		if members == nil {
+			members = []string{} // [] not null: the UI iterates this
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"thread": id, "members": members})
+	})
+
 	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
 		since := 0
 		if s := r.URL.Query().Get("since"); s != "" {
@@ -289,6 +326,14 @@ func main() {
 			// prose scan. Absent -> sender-type default (human broadcast, agent
 			// nobody). An @name in Text is display-only.
 			To []string `json:"to"`
+			// Thread joins an existing conversation: every member of it is
+			// auto-added as a recipient, so nobody has to be re-tagged by hand.
+			// 0/absent starts a new thread rooted at this message.
+			Thread int `json:"thread"`
+			// Drop removes people from the thread durably, from here on.
+			Drop []string `json:"drop"`
+			// Quiet posts without waking anyone (acknowledgements).
+			Quiet bool `json:"quiet"`
 		}
 		switch {
 		case !utf8.Valid(raw):
@@ -340,7 +385,10 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(board.Post(body.Sender, body.Text, body.Tags, body.To))
+		json.NewEncoder(w).Encode(board.PostMsg(PostOpts{
+			Sender: body.Sender, Text: body.Text, Tags: body.Tags, To: body.To,
+			Thread: body.Thread, Drop: body.Drop, Quiet: body.Quiet,
+		}))
 	})
 
 	// GET /typing: mirrors board.py's real shape -- {typing:[ids...],

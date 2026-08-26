@@ -281,6 +281,20 @@
   .kadd{width:calc(100% - 4px);margin:2px;font:inherit;font-size:12px;color:var(--accent);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:6px;cursor:pointer}
   .kadd:hover{border-color:var(--accent);background:var(--chip)}
   .kempty{font-size:11.5px;color:var(--muted);margin:2px 4px}
+
+    /* ---- conversation threading ------------------------------------------ */
+    .replybtn{background:none;border:0;color:#6b7a8d;font-size:11px;cursor:pointer;padding:0 4px;opacity:0;transition:opacity .12s}
+    .msg:hover .replybtn{opacity:1}
+    .replybtn:focus{opacity:1}
+    .replybtn:hover{color:#2d7ff9;text-decoration:underline}
+    .replybar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 8px;margin-bottom:4px;
+      background:#eef4ff;border:1px solid #cddcf5;border-radius:6px;font-size:12px}
+    .replybar .rb-lbl{color:#41536b;font-weight:600}
+    .replybar .rb-x{background:none;border:0;color:#6b7a8d;cursor:pointer;font-size:12px;margin-left:auto}
+    .replybar .rb-x:hover{color:#c0392b}
+    .replybar .tag{background:#fff;border:1px solid #cddcf5}
+    .replybar .tag.dropped{opacity:.45;text-decoration:line-through}
+    .replybar .rb-quiet{display:flex;align-items:center;gap:4px;color:#41536b;cursor:pointer;user-select:none}
 </style>
 <script>
   // Apply the saved theme before first paint so there's no flash of the default palette.
@@ -307,6 +321,7 @@
   </aside>
   <section class="feed">
     <div class="msgs" id="msgs"><div class="empty">No agents yet — click <b>+ Add agent</b> in the sidebar and point it at a project folder to add your first one.</div></div>
+    <div id="replybar" class="replybar" style="display:none"></div>
     <div id="tags" class="tags" title="Who this message goes to — type @ to add, or click × to remove"></div>
     <form id="form">
       <input id="who" placeholder="your name" autocomplete="off">
@@ -1111,6 +1126,15 @@
     var who=document.createElement("span"); who.className="who"; who.textContent=m.sender;
     var wh=document.createElement("span"); wh.className="when"; wh.textContent=when(m.ts);
     top.appendChild(who); top.appendChild(wh);
+    // REPLY: joins this message's conversation, which auto-addresses everyone
+    // already in it. m.thread is the conversation root; messages stored BEFORE
+    // threading existed have no thread field, so fall back to the message's own
+    // id -- replying to one of those starts a conversation at it rather than
+    // silently doing nothing.
+    var rb=document.createElement("button"); rb.type="button"; rb.className="replybtn";
+    rb.textContent="reply"; rb.title="Reply in this conversation — everyone in it is addressed automatically";
+    rb.addEventListener("click", function(){ startReply(m.thread||m.id, m.sender); });
+    top.appendChild(rb);
     // Structured recipients, made VISIBLE: who this message actually notified. This is the
     // auditable half of the routing fix -- addressing is a real stored field ("to"), not something
     // scraped from prose, so we can show it. Only shown when explicitly addressed (a broadcast or an
@@ -1178,10 +1202,15 @@
     // REQUIRES an explicit target (below) so a message can't be fired at the whole crew by accident;
     // the server still accepts an empty `to` (an operator's plain message -> the whole crew).
     var to=parseTargets();
-    if(!to.length){ needTarget(); return; }   // require an explicit @target -- no accidental broadcast
+    // A threaded reply already HAS its recipients (the conversation's members),
+    // so the no-accidental-broadcast guard must not fire on one. Without this
+    // carve-out the feature is unusable: replying without typing an @name --
+    // the entire point -- would be rejected by the composer.
+    if(!to.length && !replyThread){ needTarget(); return; }   // require an explicit @target -- no accidental broadcast
     $("#send").disabled=true;
     fetch("/post", {method:"POST", headers:headers({"Content-Type":"application/json"}),
-      body:JSON.stringify({sender:sender, text:text, tags:[], to:to})})
+      body:JSON.stringify({sender:sender, text:text, tags:[], to:to,
+                           thread:replyThread, drop:replyDrop, quiet:replyQuiet})})
       .then(function(r){
         if(r.status===401){ askToken(); return; }
         if(r.status>=400){
@@ -1190,7 +1219,15 @@
           // so a rejected message isn't silently lost. r.text() never rejects; parse if we can.
           return r.text().then(function(t){ var m; try{ m=JSON.parse(t).error; }catch(e){} throw m||("HTTP "+r.status); });
         }
-        $("#text").value=""; renderChips(); poll();
+        // SURFACE THE ROUTING WARNING. The daemon has always returned
+        // {"warning": "these @names are not on this board and were not woken: ..."}
+        // for a mistyped name -- and the client has always thrown it away. On
+        // 2026-08-26 two messages addressed to a MISTYPED agent name woke nobody and
+        // looked exactly like sent messages; the operator concluded the agent had died.
+        // A misroute that produces no feedback is indistinguishable from delivery,
+        // which is the whole failure this feature exists to end.
+        r.json().then(function(d){ if(d && d.warning) showRouteWarning(d.warning); }).catch(function(){});
+        $("#text").value=""; cancelReply(); renderChips(); poll();
       })
       .catch(function(err){ if(typeof err==="string"){ alert("Message not sent: "+err); } })
       .finally(function(){ $("#send").disabled=false; });
@@ -1239,6 +1276,80 @@
     ta.value=val.slice(0,t.start)+ins+val.slice(pos);
     var np=t.start+ins.length; ta.setSelectionRange(np,np); mClose(); ta.focus(); renderChips();
   }
+  // ---------- conversation threading -----------------------------------------
+  // Why this exists (operator request, 2026-08-26): addressing used to live in the
+  // sender's memory. Every reply meant recalling who else was in the conversation and
+  // re-tagging them by hand, and forgetting was SILENT -- an agent that forgot
+  // addressed NOBODY at all. Replying to a conversation carries its members
+  // automatically, so the miss stops being possible rather than something to
+  // notice afterwards.
+  var replyThread=0, replyMembers=[], replyDrop=[], replyQuiet=false, replyTo="";
+
+  function meNow(){ return (($("#who").value||"you").trim()).toLowerCase(); }
+
+  function startReply(thread, sender){
+    replyThread=thread||0; replyDrop=[]; replyQuiet=false; replyTo=sender||""; replyMembers=[];
+    renderReplyBar();                       // show immediately; fill in when members land
+    if(!replyThread) return;
+    // Ask the DAEMON who is in the conversation rather than deriving it here.
+    // One implementation of membership: a JS copy would drift from the Go one,
+    // and the first divergence shows up as a message reaching the wrong people.
+    fetch("/conversation/members?id="+encodeURIComponent(replyThread), {headers:headers({})})
+      .then(function(r){ return r.ok?r.json():{members:[]}; })
+      .then(function(d){
+        if(replyThread!==thread) return;    // a newer reply started while this was in flight
+        var me=meNow();
+        replyMembers=(d.members||[]).filter(function(n){ return n!==me; });
+        renderReplyBar();
+      })
+      .catch(function(){ renderReplyBar(); });
+    $("#text").focus();
+  }
+  function cancelReply(){ replyThread=0; replyMembers=[]; replyDrop=[]; replyQuiet=false; renderReplyBar(); renderChips(); }
+
+  function renderReplyBar(){
+    var bar=$("#replybar");
+    bar.innerHTML="";
+    if(!replyThread){ bar.style.display="none"; return; }
+    bar.style.display="flex";
+    var lbl=document.createElement("span"); lbl.className="rb-lbl";
+    lbl.textContent="Replying"+(replyTo?" to "+replyTo:"")+" · goes to:";
+    bar.appendChild(lbl);
+
+    if(!replyMembers.length){
+      var none=document.createElement("span"); none.style.color="#6b7a8d"; none.style.fontStyle="italic";
+      none.textContent="just this conversation — add anyone with @name";
+      bar.appendChild(none);
+    }
+    replyMembers.forEach(function(n){
+      var dropped=replyDrop.indexOf(n)>=0;
+      var chip=document.createElement("span"); chip.className="tag"+(dropped?" dropped":"");
+      chip.appendChild(document.createTextNode("@"+n));           // textContent path -> XSS-safe
+      var x=document.createElement("button"); x.type="button"; x.className="tagx";
+      x.textContent=dropped?"+":"×";
+      x.title=dropped?("put "+n+" back in this conversation"):("remove "+n+" from this conversation, from here on");
+      x.addEventListener("click", function(){
+        var i=replyDrop.indexOf(n);
+        if(i>=0) replyDrop.splice(i,1); else replyDrop.push(n);
+        renderReplyBar();
+      });
+      chip.appendChild(x); bar.appendChild(chip);
+    });
+
+    // Quiet: post into the conversation without waking anyone. Without it a bare
+    // "thanks" wakes every member -- N members, N turns, for nothing.
+    var q=document.createElement("label"); q.className="rb-quiet";
+    q.title="Post into the conversation without waking anyone — for acknowledgements";
+    var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=replyQuiet;
+    cb.addEventListener("change", function(){ replyQuiet=cb.checked; });
+    q.appendChild(cb); q.appendChild(document.createTextNode("quiet"));
+    bar.appendChild(q);
+
+    var x2=document.createElement("button"); x2.type="button"; x2.className="rb-x";
+    x2.textContent="cancel reply"; x2.addEventListener("click", cancelReply);
+    bar.appendChild(x2);
+  }
+
   // ---------- target chips: show live who this message is addressed to (parsed from the @mentions) ----------
   function parseTargets(){
     // Kept in lockstep with the display MENTION_RE (min 2 chars, same lead set incl '>') so what
@@ -1263,6 +1374,18 @@
     w.textContent="Address it first — type @name (or @all) to choose who this goes to.";
     box.appendChild(w);
     clearTimeout(needTarget._t); needTarget._t=setTimeout(function(){ renderChips(); }, 3200);
+  }
+  function showRouteWarning(msg){
+    // Deliberately sticky (8s) and red: a message that reached nobody is worth
+    // more than a flicker, because the sender's next move depends on believing
+    // it arrived.
+    var box=$("#tags"); box.style.display="flex"; box.innerHTML="";
+    var w=document.createElement("span");
+    w.style.cssText="color:#c0392b;font-size:12px;font-weight:600";
+    w.textContent="⚠ "+msg;                     // textContent -> XSS-safe
+    box.appendChild(w);
+    clearTimeout(showRouteWarning._t);
+    showRouteWarning._t=setTimeout(function(){ renderChips(); }, 8000);
   }
   function renderChips(){
     var box=$("#tags"), out=parseTargets();
