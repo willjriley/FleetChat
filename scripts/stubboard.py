@@ -9,7 +9,13 @@ real without touching anything live.
 It is a TEST HARNESS, not a second board: it never spawns an agent, never writes
 board.jsonl, and holds everything in memory.
 
-    python server/web/stubboard.py 8899
+It lives in scripts/ rather than beside the page it drives, because server/web/ is
+served wholesale by http.FileServer -- anything dropped in there becomes a fetchable
+asset on the live board (this file was briefly reachable at /stubboard.py). A test
+harness should not be a served route, so it sits outside the served tree and is
+pointed at the page over HTTP like any other client.
+
+    python scripts/stubboard.py 8899
 """
 import json
 import sys

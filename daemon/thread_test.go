@@ -274,3 +274,38 @@ func TestProtocolRulesDescribeThreadingNotTheOldModel(t *testing.T) {
 		}
 	}
 }
+
+// normName must be IDENTITY over every id an agent can actually have.
+//
+// Routing and membership compare on normName, while the registry keys on the raw
+// id. That is only safe while the two can never disagree -- otherwise two
+// distinct registry entries would be one person to the router, and a message
+// meant for one would wake the other.
+//
+// Today they cannot disagree, because validID is ^[a-z0-9_-]{1,32}$: already
+// lowercase, no "@", no spaces, so normName changes nothing. This test exists
+// because that guarantee is a PROPERTY OF validID, not of normName -- widening
+// validID to accept uppercase (or "@") would make the collision real, silently,
+// with no other test failing. This is the one that would go red.
+func TestNormNameIsIdentityOverEveryLegalAgentID(t *testing.T) {
+	for _, id := range []string{"a", "hope", "dm-x", "agent_1", "x9", "a-b_c-9",
+		strings.Repeat("z", 32)} {
+		if !validID.MatchString(id) {
+			t.Fatalf("test fixture %q is not a legal id -- fix the fixture", id)
+		}
+		if got := normName(id); got != id {
+			t.Errorf("normName(%q) = %q: routing would not match the registry key", id, got)
+		}
+	}
+
+	// The invariant depends on validID rejecting anything normName would alter.
+	// If any of these ever become legal, the identity above breaks and routing
+	// can conflate two distinct agents.
+	for _, bad := range []string{"Hope", "HOPE", "hOpe", "@hope", " hope", "hope "} {
+		if validID.MatchString(bad) {
+			t.Errorf("validID now accepts %q, which normName rewrites to %q -- "+
+				"two registry entries would collide into one routing identity; "+
+				"add a normName collision check at registration", bad, normName(bad))
+		}
+	}
+}
