@@ -1131,10 +1131,14 @@
     // threading existed have no thread field, so fall back to the message's own
     // id -- replying to one of those starts a conversation at it rather than
     // silently doing nothing.
+    // Only offered when the daemon can actually honour it -- an affordance that
+    // silently does the wrong thing is worse than no affordance.
+    if(threadsOK){
     var rb=document.createElement("button"); rb.type="button"; rb.className="replybtn";
     rb.textContent="reply"; rb.title="Reply in this conversation — everyone in it is addressed automatically";
     rb.addEventListener("click", function(){ startReply(m.thread||m.id, m.sender); });
     top.appendChild(rb);
+    }
     // Structured recipients, made VISIBLE: who this message actually notified. This is the
     // auditable half of the routing fix -- addressing is a real stored field ("to"), not something
     // scraped from prose, so we can show it. Only shown when explicitly addressed (a broadcast or an
@@ -1206,11 +1210,12 @@
     // so the no-accidental-broadcast guard must not fire on one. Without this
     // carve-out the feature is unusable: replying without typing an @name --
     // the entire point -- would be rejected by the composer.
-    if(!to.length && !replyThread){ needTarget(); return; }   // require an explicit @target -- no accidental broadcast
+    if(!to.length && !(replyThread && threadsOK)){ needTarget(); return; }   // require an explicit @target -- no accidental broadcast
     $("#send").disabled=true;
     fetch("/post", {method:"POST", headers:headers({"Content-Type":"application/json"}),
-      body:JSON.stringify({sender:sender, text:text, tags:[], to:to,
-                           thread:replyThread, drop:replyDrop, quiet:replyQuiet})})
+      body:JSON.stringify(threadsOK
+        ? {sender:sender, text:text, tags:[], to:to, thread:replyThread, drop:replyDrop, quiet:replyQuiet}
+        : {sender:sender, text:text, tags:[], to:to})})
       .then(function(r){
         if(r.status===401){ askToken(); return; }
         if(r.status>=400){
@@ -1284,6 +1289,28 @@
   // automatically, so the miss stops being possible rather than something to
   // notice afterwards.
   var replyThread=0, replyMembers=[], replyDrop=[], replyQuiet=false, replyTo="";
+
+  // Does the DAEMON behind this page support threading?
+  //
+  // Defaults to FALSE and is only turned on by a positive answer. The page is
+  // served from disk, so it can be newer than the binary serving it -- that
+  // happened on 2026-08-26 and produced a board where the reply button existed,
+  // the members endpoint 404'd, and the composer skipped its "address it first"
+  // guard expecting recipients the daemon never supplied. Messages could reach
+  // nobody, silently.
+  //
+  // Assuming NO until told otherwise makes that impossible: an older daemon, an
+  // unreachable one, or a failed probe all land on the previous behaviour, which
+  // is safe because it demands an explicit @target. Guessing YES would restore
+  // exactly the silent-send bug.
+  var threadsOK=false;
+  function probeCapabilities(){
+    return fetch("/capabilities", {headers:headers({})})
+      .then(function(r){ return r.ok?r.json():{}; })
+      .then(function(d){ threadsOK = !!(d && d.threads); })
+      .catch(function(){ threadsOK=false; })
+      .then(function(){ if(!threadsOK) cancelReply(); });
+  }
 
   function meNow(){ return (($("#who").value||"you").trim()).toLowerCase(); }
 
@@ -1530,7 +1557,12 @@
   var rosterTimer=setInterval(loadRoster, 4000);   // catch + Add agent / x edits to the lineup
   var ttsTimer=setInterval(loadTtsState, 5000);    // refresh whether the high-quality voices are installed
   var thTimer=setInterval(loadThreads, 4000);      // task cards refresh only while the panel is open
-  poll(); loadTyping(); loadTtsState(); loadThreads();
+  // Probe FIRST, then draw. The probe decides whether reply buttons are offered at
+  // all, so rendering before the answer arrives would paint affordances for one
+  // frame and then remove them -- and worse, a message sent in that window would
+  // take the relaxed composer path against a daemon that cannot honour it.
+  probeCapabilities().then(function(){ poll(); });
+  loadTyping(); loadTtsState(); loadThreads();
 })();
 </script>
 <script>

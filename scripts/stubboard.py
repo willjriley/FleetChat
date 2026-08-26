@@ -18,6 +18,7 @@ pointed at the page over HTTP like any other client.
     python scripts/stubboard.py 8899
 """
 import json
+import os
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -32,6 +33,7 @@ MESSAGES = [
 ]
 MEMBERS = {1: ["owner", "alice", "carol"]}
 POSTED = []
+OLD_DAEMON = os.environ.get("OLD_DAEMON") == "1"
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -51,7 +53,18 @@ class Handler(SimpleHTTPRequestHandler):
             # NB the wire shape is {"messages":[...]}, NOT a bare array -- the
             # client reads data.messages, so a bare list renders an empty board.
             return self._json({"messages": [m for m in MESSAGES if m["id"] > since]})
+        if u.path == "/capabilities":
+            # OLD_DAEMON=1 impersonates a binary that predates threading: it 404s
+            # here exactly as the real one does, so the client's fallback can be
+            # tested rather than assumed.
+            if OLD_DAEMON:
+                self.send_error(404)
+                return
+            return self._json({"threads": True})
         if u.path == "/conversation/members":
+            if OLD_DAEMON:
+                self.send_error(404)
+                return
             tid = int((q.get("id") or ["0"])[0])
             return self._json({"thread": tid, "members": MEMBERS.get(tid, [])})
         if u.path == "/roster":

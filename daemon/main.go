@@ -259,6 +259,31 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{"roster": out})
 	})
 
+	// GET /capabilities -> what THIS daemon can do.
+	//
+	// The web UI is served from disk by http.FileServer, so the front-end can be
+	// newer than the binary serving it -- checking out a branch in the served tree
+	// is enough. That happened on 2026-08-26 and put the live board into
+	// split-brain: the newer page offered a reply button, /conversation/members
+	// 404'd, and the composer skipped its "address it first" guard on the
+	// assumption the daemon would supply the recipients. The result was a message
+	// that could reach nobody, silently -- the exact failure threading exists to
+	// remove, reintroduced by a version skew.
+	//
+	// So the page ASKS before it assumes. A daemon without this route answers 404,
+	// which the client reads as "no threading" and falls back to the older, safe
+	// behaviour. That is what lets the UI ship independently of the binary rather
+	// than merely happening to work.
+	mux.HandleFunc("/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			// Named per FEATURE, not a version number: the client needs to know
+			// what it may do, and a version would force it to keep a table
+			// mapping versions onto behaviour.
+			"threads": true,
+		})
+	})
+
 	// GET /conversation/members?id=N -> who is currently in conversation N.
 	//
 	// NB the path deliberately says "conversation", not "thread": /threads is
