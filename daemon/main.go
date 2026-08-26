@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -292,14 +293,57 @@ func main() {
 	// this next, so the message-level concept gets its own word in the URL even
 	// though the JSON field stays `thread`.
 	mux.HandleFunc("/conversation/members", func(w http.ResponseWriter, r *http.Request) {
-		id := 0
-		fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
 		w.Header().Set("Content-Type", "application/json")
+
+		// A MALFORMED REQUEST MUST NOT LOOK LIKE AN EMPTY ANSWER.
+		//
+		// This first shipped as `Sscanf(query("id"))` into a zero-valued int and
+		// always answered 200. Every one of these came back identical --
+		// {"members":[],"thread":0} -- so a caller could not tell them apart:
+		//
+		//   no id at all          caller forgot the parameter
+		//   ?thread=tN            caller used the wrong parameter name, and the
+		//                         wrong id space: /threads is the KANBAN CARD api,
+		//                         and "tN" is a card, not a conversation
+		//   ?id=abc               unparseable
+		//
+		// A crew member probing it read the empty list as "this conversation has
+		// no participants" when the truth was "I did not understand you" -- the
+		// same 200-that-means-failure shape that cost us a day elsewhere. So the
+		// caller error is now a 400 that says what it wanted.
+		raw := r.URL.Query().Get("id")
+		if raw == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "missing required parameter: id. Use ?id=<message id> -- the numeric id of any message in the conversation. NB this is NOT a task card id (the tN ids from /threads are a different, unrelated thing).",
+			})
+			return
+		}
+		// strconv, not Sscanf: Sscanf("12abc") happily yields 12 and reports no
+		// problem, so a typo would be honoured as a different conversation.
+		id, err := strconv.Atoi(raw)
+		if err != nil || id < 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "id must be a non-negative integer message id, got " + strconv.Quote(raw) + ". NB task card ids (tN) are a different id space and are not valid here.",
+			})
+			return
+		}
+
 		members := board.Members(id)
 		if members == nil {
 			members = []string{} // [] not null: the UI iterates this
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"thread": id, "members": members})
+		// known distinguishes "this conversation exists and is empty" from "no
+		// message has ever carried this thread id". Both legitimately return an
+		// empty list -- replying to a message that predates threading starts a
+		// conversation at an id nothing references yet -- so the DIFFERENCE has to
+		// be reported rather than inferred from the emptiness.
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"thread":  id,
+			"members": members,
+			"known":   board.ThreadExists(id),
+		})
 	})
 
 	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {

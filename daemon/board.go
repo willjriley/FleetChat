@@ -194,6 +194,27 @@ func (b *Board) Clear() {
 	}
 }
 
+// ThreadExists reports whether any message actually carries this thread id.
+//
+// Needed because an empty member list is ambiguous on its own: a conversation
+// that exists but has been emptied, and an id no message has ever used, both
+// produce []. Replying to a pre-threading message legitimately produces the
+// second case, so it is not an error -- but the caller still has to be able to
+// tell which one it is rather than guessing from the emptiness.
+func (b *Board) ThreadExists(thread int) bool {
+	if thread == 0 {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, m := range b.messages {
+		if m.Thread == thread {
+			return true
+		}
+	}
+	return false
+}
+
 // Members is the exported view of participantsLocked, so the UI can ask the
 // daemon who is in a conversation instead of re-deriving it in JavaScript. A
 // second implementation of membership would be a second thing to keep correct,
