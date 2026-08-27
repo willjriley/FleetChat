@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,7 +168,26 @@ func main() {
 			// content is a no-op wake anyway).
 			return
 		}
-		board.Post(agentID, body, nil, to)
+		// THREADING: rejoin the conversation this agent was woken into, so a
+		// reply reaches everyone in it without the agent naming them. Before
+		// this, a reply with no >>to: directive addressed NOBODY -- an agent
+		// that simply answered the question was, structurally, talking to
+		// itself.
+		thread := 0
+		if a, ok := reg.Get(agentID); ok {
+			thread = a.wakeThreadID()
+		}
+		// An EXPLICIT empty directive (">>to:" with nothing after it) has always
+		// meant "deliberately nobody". Auto-addressing must not override an
+		// explicit intent, so it maps to a quiet post: the reply still joins the
+		// thread and is still visible, it just wakes no one. That also hands
+		// agents the acknowledge-without-waking path using a directive they
+		// already know, instead of a new one to remember.
+		//
+		// nil (no directive at all) is the DIFFERENT case -- silence about
+		// routing, which is exactly what auto-addressing is for.
+		quiet := to != nil && len(to) == 0
+		board.PostMsg(PostOpts{Sender: agentID, Text: body, To: to, Thread: thread, Quiet: quiet})
 	}
 	threads := NewThreadStore(filepath.Join(repoRoot, "data", "threads.json"))
 
@@ -240,6 +260,92 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{"roster": out})
 	})
 
+	// GET /capabilities -> what THIS daemon can do.
+	//
+	// The web UI is served from disk by http.FileServer, so the front-end can be
+	// newer than the binary serving it -- checking out a branch in the served tree
+	// is enough. That happened on 2026-08-26 and put the live board into
+	// split-brain: the newer page offered a reply button, /conversation/members
+	// 404'd, and the composer skipped its "address it first" guard on the
+	// assumption the daemon would supply the recipients. The result was a message
+	// that could reach nobody, silently -- the exact failure threading exists to
+	// remove, reintroduced by a version skew.
+	//
+	// So the page ASKS before it assumes. A daemon without this route answers 404,
+	// which the client reads as "no threading" and falls back to the older, safe
+	// behaviour. That is what lets the UI ship independently of the binary rather
+	// than merely happening to work.
+	mux.HandleFunc("/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			// Named per FEATURE, not a version number: the client needs to know
+			// what it may do, and a version would force it to keep a table
+			// mapping versions onto behaviour.
+			"threads": true,
+		})
+	})
+
+	// GET /conversation/members?id=N -> who is currently in conversation N.
+	//
+	// NB the path deliberately says "conversation", not "thread": /threads is
+	// already the KANBAN CARD api (ThreadStore). Two different things called
+	// "thread" on two routes one character apart is a trap for whoever reads
+	// this next, so the message-level concept gets its own word in the URL even
+	// though the JSON field stays `thread`.
+	mux.HandleFunc("/conversation/members", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// A MALFORMED REQUEST MUST NOT LOOK LIKE AN EMPTY ANSWER.
+		//
+		// This first shipped as `Sscanf(query("id"))` into a zero-valued int and
+		// always answered 200. Every one of these came back identical --
+		// {"members":[],"thread":0} -- so a caller could not tell them apart:
+		//
+		//   no id at all          caller forgot the parameter
+		//   ?thread=tN            caller used the wrong parameter name, and the
+		//                         wrong id space: /threads is the KANBAN CARD api,
+		//                         and "tN" is a card, not a conversation
+		//   ?id=abc               unparseable
+		//
+		// A crew member probing it read the empty list as "this conversation has
+		// no participants" when the truth was "I did not understand you" -- the
+		// same 200-that-means-failure shape that cost us a day elsewhere. So the
+		// caller error is now a 400 that says what it wanted.
+		raw := r.URL.Query().Get("id")
+		if raw == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "missing required parameter: id. Use ?id=<message id> -- the numeric id of any message in the conversation. NB this is NOT a task card id (the tN ids from /threads are a different, unrelated thing).",
+			})
+			return
+		}
+		// strconv, not Sscanf: Sscanf("12abc") happily yields 12 and reports no
+		// problem, so a typo would be honoured as a different conversation.
+		id, err := strconv.Atoi(raw)
+		if err != nil || id < 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "id must be a non-negative integer message id, got " + strconv.Quote(raw) + ". NB task card ids (tN) are a different id space and are not valid here.",
+			})
+			return
+		}
+
+		members := board.Members(id)
+		if members == nil {
+			members = []string{} // [] not null: the UI iterates this
+		}
+		// known distinguishes "this conversation exists and is empty" from "no
+		// message has ever carried this thread id". Both legitimately return an
+		// empty list -- replying to a message that predates threading starts a
+		// conversation at an id nothing references yet -- so the DIFFERENCE has to
+		// be reported rather than inferred from the emptiness.
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"thread":  id,
+			"members": members,
+			"known":   board.ThreadExists(id),
+		})
+	})
+
 	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
 		since := 0
 		if s := r.URL.Query().Get("since"); s != "" {
@@ -289,6 +395,14 @@ func main() {
 			// prose scan. Absent -> sender-type default (human broadcast, agent
 			// nobody). An @name in Text is display-only.
 			To []string `json:"to"`
+			// Thread joins an existing conversation: every member of it is
+			// auto-added as a recipient, so nobody has to be re-tagged by hand.
+			// 0/absent starts a new thread rooted at this message.
+			Thread int `json:"thread"`
+			// Drop removes people from the thread durably, from here on.
+			Drop []string `json:"drop"`
+			// Quiet posts without waking anyone (acknowledgements).
+			Quiet bool `json:"quiet"`
 		}
 		switch {
 		case !utf8.Valid(raw):
@@ -340,7 +454,10 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(board.Post(body.Sender, body.Text, body.Tags, body.To))
+		json.NewEncoder(w).Encode(board.PostMsg(PostOpts{
+			Sender: body.Sender, Text: body.Text, Tags: body.Tags, To: body.To,
+			Thread: body.Thread, Drop: body.Drop, Quiet: body.Quiet,
+		}))
 	})
 
 	// GET /typing: mirrors board.py's real shape -- {typing:[ids...],

@@ -50,6 +50,48 @@ type BoardMessage struct {
 	// sender-type default applied (broadcast for a human, nobody for an agent).
 	To []string `json:"to,omitempty"`
 	TS float64  `json:"ts"`
+
+	// ---- THREADING (operator request, 2026-08-26) --------------------------------------
+	// The problem this solves: routing lived entirely in the SENDER'S MEMORY.
+	// Every reply required whoever wrote it to recall who else was in the
+	// conversation and re-address them by hand, and an agent that forgot
+	// addressed NOBODY (resolveRecipients: agent + empty `to` -> nobody). A
+	// missed correction is the dangerous shape -- the other party keeps
+	// building on something known false, and the cost lands on the operator,
+	// who has to scroll the log to find the miss.
+	//
+	// Thread is the ID of the message that STARTED the conversation; a root
+	// message carries its own ID. Everything else is derived from the log by
+	// participantsLocked, so membership needs no second state file and cannot
+	// drift out of sync with the messages it describes.
+	Thread int `json:"thread,omitempty"`
+
+	// Drop removes names from the thread FROM THIS MESSAGE ON. It is stored
+	// rather than applied-and-forgotten so a removal sticks: otherwise every
+	// subsequent message would have to re-state it, which is the same
+	// remember-it-yourself failure this feature exists to delete. Re-adding is
+	// just naming them in `To` again.
+	Drop []string `json:"drop,omitempty"`
+
+	// Quiet posts to the thread WITHOUT waking anyone. Auto-addressing means a
+	// bare "thanks" would otherwise wake every member -- N members, N turns,
+	// for nothing. Card t176 flagged this before the build ("need an
+	// acknowledge-WITHOUT-waking path or every 'thanks' costs a turn each"),
+	// so it ships with the feature rather than after the first turn-storm.
+	Quiet bool `json:"quiet,omitempty"`
+}
+
+// PostOpts carries everything a post needs. It exists because Post grew from
+// four positional args to seven, and positional booleans at a call site
+// ("false, true") are unreadable and easy to transpose.
+type PostOpts struct {
+	Sender string
+	Text   string
+	Tags   []string
+	To     []string
+	Thread int      // 0 = start a new thread rooted at this message
+	Drop   []string // names to remove from the thread, durably
+	Quiet  bool     // post without waking anyone
 }
 
 // Board is the shared message log FleetChat's real UI expects at /messages +
@@ -152,6 +194,39 @@ func (b *Board) Clear() {
 	}
 }
 
+// ThreadExists reports whether any message actually carries this thread id.
+//
+// Needed because an empty member list is ambiguous on its own: a conversation
+// that exists but has been emptied, and an id no message has ever used, both
+// produce []. Replying to a pre-threading message legitimately produces the
+// second case, so it is not an error -- but the caller still has to be able to
+// tell which one it is rather than guessing from the emptiness.
+func (b *Board) ThreadExists(thread int) bool {
+	if thread == 0 {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, m := range b.messages {
+		if m.Thread == thread {
+			return true
+		}
+	}
+	return false
+}
+
+// Members is the exported view of participantsLocked, so the UI can ask the
+// daemon who is in a conversation instead of re-deriving it in JavaScript. A
+// second implementation of membership would be a second thing to keep correct,
+// and the first divergence between them would show as a message that reached
+// the wrong people -- silently, which is the exact failure this feature exists
+// to remove.
+func (b *Board) Members(thread int) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.participantsLocked(thread)
+}
+
 func (b *Board) Since(id int) []BoardMessage {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -190,7 +265,78 @@ type PostResult struct {
 	Warning string   `json:"warning,omitempty"`
 }
 
+// normName reduces a name to the form routing compares on: lowercase, no
+// leading "@", no surrounding space. Membership that matched on the raw string
+// would treat "@Bob", "bob " and "bob" as three different people, so a thread
+// would slowly accumulate duplicates of the same member.
+func normName(s string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "@"))
+}
+
+// participantsLocked returns who is currently in a thread, in the order they
+// joined, derived by replaying the thread's messages.
+//
+// Deriving it (rather than storing a membership list) is deliberate: the log is
+// already the durable record, it replays identically on restart, and there is no
+// second copy of the truth to fall out of step with the messages. A member is
+// anyone who has SPOKEN in the thread or been ADDRESSED in it, minus anyone a
+// later message dropped.
+//
+// Caller must hold b.mu.
+func (b *Board) participantsLocked(thread int) []string {
+	if thread == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	order := []string{}
+	add := func(raw string) {
+		n := normName(raw)
+		// "board" is the system announcer, never a conversation member -- it
+		// posts restart notices, and auto-addressing them back would be a
+		// message to a thing that cannot read.
+		if n == "" || n == "board" || n == "all" {
+			return
+		}
+		if !seen[n] {
+			seen[n] = true
+			order = append(order, n)
+		}
+	}
+	for _, m := range b.messages {
+		if m.Thread != thread {
+			continue
+		}
+		add(m.Sender)
+		for _, t := range m.To {
+			add(t)
+		}
+		// Drops apply AFTER the adds of the same message, so a message that
+		// both addresses and drops a name resolves to dropped -- the explicit
+		// removal is the later intent.
+		for _, d := range m.Drop {
+			n := normName(d)
+			if seen[n] {
+				delete(seen, n)
+				for i, o := range order {
+					if o == n {
+						order = append(order[:i], order[i+1:]...)
+						break
+					}
+				}
+			}
+		}
+	}
+	return order
+}
+
+// Post keeps the original four-arg shape for the callers that start a fresh
+// thread and want the defaults (the join announcement, restart notices).
 func (b *Board) Post(sender, text string, tags []string, to []string) PostResult {
+	return b.PostMsg(PostOpts{Sender: sender, Text: text, Tags: tags, To: to})
+}
+
+func (b *Board) PostMsg(o PostOpts) PostResult {
+	sender, text, tags, to := o.Sender, o.Text, o.Tags, o.To
 	agents := b.reg.All()
 	ids := make([]string, len(agents))
 	for i, a := range agents {
@@ -204,13 +350,66 @@ func (b *Board) Post(sender, text string, tags []string, to []string) PostResult
 	to = mergeAtMentions(to, text, ids)
 
 	b.mu.Lock()
-	msg := BoardMessage{ID: b.nextID, Sender: sender, Text: text, Tags: tags, To: to, TS: float64(time.Now().UnixMilli()) / 1000}
+	id := b.nextID
+	// A message with no thread STARTS one, rooted at itself. That means every
+	// message belongs to a thread -- there is no second, unthreaded class of
+	// message whose replies would silently fall back to remember-it-yourself.
+	thread := o.Thread
+	if thread == 0 {
+		thread = id
+	}
+
+	// ---- AUTO-ADDRESSING: the point of the whole feature ---------------------
+	// Everyone already in this conversation is added to `to` WITHOUT the sender
+	// having to name them. The sender is excluded (nobody is woken by their own
+	// message) and anything this message drops is excluded.
+	//
+	// This is a union, not a replacement: an explicit `to` still ADDS people, so
+	// pulling a new person into a thread is just naming them once, and from the
+	// next message on they are carried automatically.
+	dropped := map[string]bool{}
+	for _, d := range o.Drop {
+		dropped[normName(d)] = true
+	}
+	have := map[string]bool{}
+	for _, t := range to {
+		have[normName(t)] = true
+	}
+	auto := []string{}
+	for _, m := range b.participantsLocked(thread) {
+		if m == normName(sender) || dropped[m] || have[m] {
+			continue
+		}
+		have[m] = true
+		auto = append(auto, m)
+	}
+	to = append(append([]string{}, to...), auto...)
+	// A drop must also strip the name from THIS message's own `to` -- otherwise
+	// removing someone in the same breath as replying to them still wakes them.
+	if len(dropped) > 0 {
+		kept := to[:0]
+		for _, t := range to {
+			if !dropped[normName(t)] {
+				kept = append(kept, t)
+			}
+		}
+		to = kept
+	}
+
+	msg := BoardMessage{ID: id, Sender: sender, Text: text, Tags: tags, To: to,
+		Thread: thread, Drop: o.Drop, Quiet: o.Quiet, TS: float64(time.Now().UnixMilli()) / 1000}
 	b.nextID++
 	b.messages = append(b.messages, msg)
 	b.appendLocked(msg)
 	b.mu.Unlock()
 
 	recipients := resolveRecipients(sender, to, ids)
+	// Quiet is an acknowledgement, not a summons: it still joins the thread and
+	// is still recorded with its full recipient list (so the board shows who it
+	// was for), but it wakes nobody.
+	if o.Quiet {
+		recipients = map[string]bool{}
+	}
 	// /vote and /poll are board plumbing (the poll widget), never a wake -- the
 	// old prose-scan router skipped them explicitly; dropping that skip in the
 	// rewrite let a single vote (a human sender with no `to`) broadcast to the
@@ -240,6 +439,9 @@ func (b *Board) Post(sender, text string, tags []string, to []string) PostResult
 			// supplying the rules, it simply has none to act on. Every board turn here
 			// is just the bare message envelope.
 			prompt := messageEnvelope(sender, text)
+			// Record the conversation BEFORE the wake, so that if this agent
+			// replies the daemon knows which thread the reply belongs to.
+			a.setWakeThread(msg.Thread)
 			// Only count agents actually reached: a SendPrompt error means the
 			// process's stdin is gone (dead/reaping), so it was NOT woken -- the
 			// debug trace should say so rather than overstate the fan-out.
@@ -310,16 +512,20 @@ func messageEnvelope(sender, text string) string {
 
 func protocolRules() string {
 	return "You are in a live team chat with other agents and a human operator." +
-		"\n\nADDRESSING (a real wake mechanism, not etiquette): to notify a teammate, put \"@name\" in " +
-		"your message -- \"@all\" reaches the whole crew. An @name is the ONLY thing that wakes someone; " +
-		"a bare name (no @) is just display, so you can mention anyone in passing without summoning them. " +
-		"Your crewmates are PEERS on this board, not subagents you spawned -- the ONLY way to reach one is " +
-		"an @name in your reply here; there is no separate send-message or spawn-agent tool for them, so " +
-		"don't go hunting for one. " +
-		"A reply that addresses no one is still posted and visible to the operator -- it just doesn't wake " +
-		"a teammate. Each @name COSTS that teammate a turn, so tag someone only when you actually need them " +
-		"to act -- a bare acknowledgment or \"thanks\" needs no @ (that is what keeps replies from " +
-		"ping-ponging). If a message has nothing to do with you, reply with exactly: PASS and nothing else. " +
+		"\n\nADDRESSING: replies stay in the conversation AUTOMATICALLY. When you reply to a message, " +
+		"everyone already in that conversation is addressed for you -- you do NOT have to remember who they " +
+		"are or re-tag them, and you cannot miss someone by forgetting. Just answer.\n" +
+		"- To bring in someone NEW, put \"@name\" in your reply (\"@all\" for the whole crew). They are then " +
+		"carried automatically from that point on, so you only ever name them once.\n" +
+		"- To acknowledge WITHOUT waking anyone -- \"thanks\", \"got it\", a note for the record -- make the first " +
+		"line of your reply exactly \">>to:\" and nothing else. The message is still posted and visible; it " +
+		"simply costs nobody a turn. Use it for anything that needs no answer, because every member of a " +
+		"conversation spends a turn on every reply that is not quiet.\n" +
+		"A bare name with no @ is just display, so you can mention anyone in passing without pulling " +
+		"them in -- which matters more now, because an @name adds them to the conversation for good.\n" +
+		"Your crewmates are PEERS on this board, not subagents you spawned -- replying here is how you reach " +
+		"them; there is no separate send-message or spawn-agent tool, so don't go hunting for one. " +
+		"If a message has nothing to do with you, reply with exactly: PASS and nothing else. " +
 		"But a message that @-tags YOU with a direct request always gets a real reply -- even if it looks " +
 		"redundant or you've answered it before. PASS is never an answer to being asked; the requester " +
 		"can't see a PASS, so to them it's indistinguishable from you being broken.\n\n" +

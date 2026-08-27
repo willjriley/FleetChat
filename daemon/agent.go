@@ -69,10 +69,17 @@ type Agent struct {
 	in        *bufio.Writer // subprocess stdin, wrapped for line-writing
 	mu        sync.Mutex
 	subs      map[*Viewer]bool
-	buf       *ringBuffer                   // reconnect-backfill, see ringbuffer.go
-	onExit    func()                        // set by the registry: cleans up bookkeeping if the process dies on its OWN
-	onMessage func(agentID, text string)    // set by the registry: feeds this agent's replies back into the shared Board
-	onTyping  func(agentID string, on bool) // set by the registry: drives GET /typing's animated "…"
+	buf       *ringBuffer                // reconnect-backfill, see ringbuffer.go
+	onExit    func()                     // set by the registry: cleans up bookkeeping if the process dies on its OWN
+	onMessage func(agentID, text string) // set by the registry: feeds this agent's replies back into the shared Board
+	// wakeThread is the thread of the message that most recently woke this
+	// agent. It is the whole mechanism behind zero-effort threading: an agent's
+	// reply has no field saying what it is a reply TO (SendPrompt just feeds
+	// text), so without this the daemon could not tell which conversation a
+	// reply belonged to and the agent would be back to naming everyone by hand.
+	// Guarded by a.mu; set on fan-out, read when the reply comes back.
+	wakeThread int
+	onTyping   func(agentID string, on bool) // set by the registry: drives GET /typing's animated "…"
 	// onSession fires once per process, when system/init reports the claude
 	// session id. The registry persists it so the NEXT spawn of this agent id
 	// can --resume this exact conversation. Guarded by a.mu like the others.
@@ -696,6 +703,23 @@ func (a *Agent) route(raw rawClaudeLine, rawLine string) {
 		// Deliberately silent: tool_use/tool_result and anything else not
 		// modeled yet. Not an error -- just not surfaced to viewers today.
 	}
+}
+
+// setWakeThread records which conversation this agent is being woken INTO, so
+// its reply can rejoin that thread without the agent having to say so.
+func (a *Agent) setWakeThread(t int) {
+	a.mu.Lock()
+	a.wakeThread = t
+	a.mu.Unlock()
+}
+
+// wakeThreadID reads the thread this agent was last woken into. Zero means it
+// was not woken by a board message (a hand-typed CLI turn, say), in which case
+// the reply starts a thread of its own rather than joining someone else's.
+func (a *Agent) wakeThreadID() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.wakeThread
 }
 
 // SendPrompt feeds a new user turn into the ALREADY-RUNNING process --
