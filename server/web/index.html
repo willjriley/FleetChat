@@ -323,6 +323,7 @@
 <script>
 (function(){
   var lastId = 0, token = localStorage.getItem("fleetchat_token") || "";
+  var MAX_DOM_MSGS = 400;   // newest N kept as DOM nodes; see the trim in add()
   var counts = {}, seen = {}, allMsgs = [], controlOn = false, agentNames = {}, rosterMap = {}, typingSet = {}, rosterList = [], speakingSet = {};
   var $ = function(s){ return document.querySelector(s); };
   var msgs = $("#msgs"), agents = $("#agents"), dot = $("#dot"), scope = $("#scope");
@@ -354,12 +355,35 @@
   // ---------- safe rich rendering (escape FIRST, then formatting) ----------
   function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 
+  // ONE PASS, not four chained .replace() calls.
+  //
+  // The chained version corrupted its own output. The number pass inserted
+  //     <span class="s-num">4257</span>
+  // and the keyword pass then matched the literal word `class` INSIDE that tag --
+  // `class` is in the keyword list -- yielding `<span <span class="s-kw">class</span>=...`.
+  // That is malformed, so the browser rendered the remainder as visible text. Every
+  // number, string and comment was affected; UUIDs simply made it obvious.
+  //
+  // A single regex with alternation consumes each character exactly once, so no pass
+  // can ever see another pass's markup.
+  //
+  // The number lookarounds also keep digits out of identifiers: a UUID, hash, version
+  // or timestamp is not several separate numbers and should not be chopped into spans.
+  // NO LOOKBEHIND. `(?<!...)` is Chromium-only, and this regex lives INSIDE the main
+  // IIFE -- so on a browser lacking it the whole <script> fails to PARSE and the board
+  // renders BLANK, not merely uncoloured (per review). A blank board is far worse
+  // than missing syntax colour, so this captures the preceding character in a group
+  // and re-emits it, which is equivalent and parses everywhere.
+  var HL_RX = /(&quot;[\s\S]*?&quot;|&#39;[\s\S]*?&#39;)|(#.*|\/\/.*)|(^|[^\w.:-])(\d+(?:\.\d+)*)(?![\w.:-])|\b(def|class|function|return|if|else|elif|for|while|import|from|export|const|let|var|new|try|except|catch|finally|await|async|true|false|null|None|True|False)\b/g;
+
   function highlight(escLine){   // light, language-agnostic token coloring on already-escaped text
-    return escLine
-      .replace(/(&quot;.*?&quot;|&#39;.*?&#39;)/g,'<span class="s-str">$1</span>')
-      .replace(/(#.*|\/\/.*)/g,'<span class="s-com">$1</span>')
-      .replace(/\b(\d+(?:\.\d+)?)\b/g,'<span class="s-num">$1</span>')
-      .replace(/\b(def|class|function|return|if|else|elif|for|while|import|from|export|const|let|var|new|try|except|catch|finally|await|async|true|false|null|None|True|False)\b/g,'<span class="s-kw">$1</span>');
+    return escLine.replace(HL_RX, function(m, str, com, pre, num, kw){
+      if(str !== undefined) return '<span class="s-str">' + str + '</span>';
+      if(com !== undefined) return '<span class="s-com">' + com + '</span>';
+      if(num !== undefined) return pre + '<span class="s-num">' + num + '</span>';
+      if(kw  !== undefined) return '<span class="s-kw">'  + kw  + '</span>';
+      return m;
+    });
   }
   function renderCode(code, lang){
     var lines = code.replace(/\n$/,"").split("\n");
@@ -971,7 +995,14 @@
   }
   function jumpToMsg(id){
     var el=msgs.querySelector('.msg[data-id="'+id+'"]');   // add() stamps data-id on every rendered message
-    if(!el) return;
+    if(!el){
+      // LOW-3: the DOM is capped at the newest MAX_DOM_MSGS, so a /find hit older than
+      // that has no node to scroll to. Silently returning made the click read as broken.
+      // Say so instead -- the message still exists, it just is not rendered.
+      localNote("<p>That message is older than the "+MAX_DOM_MSGS+" kept on screen, so there is nothing to scroll to. "
+                +"It is still in the transcript export.</p>");
+      return;
+    }
     el.scrollIntoView({behavior:"smooth", block:"center"});
     el.classList.add("flash"); setTimeout(function(){ el.classList.remove("flash"); }, 1200);
   }
@@ -1103,6 +1134,16 @@
     // (speech is server-side only: the high-quality speaker reads the board itself; the browser never speaks)
     var nearBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 140;
     msgs.appendChild(el);
+    // CAP THE DOM. On load lastId is 0, so the first poll fetches /messages?since=0 --
+    // every message the board has ever held. At 8,153 messages / 5.6 MB of text (one
+    // single message was 36 KB) that builds a DOM the renderer cannot survive, which
+    // is what STATUS_ACCESS_VIOLATION was: the tab being killed, not the daemon.
+    // It also grew worse every day, because the board only ever gets longer.
+    //
+    // Trim from the top so the newest MAX_DOM_MSGS stay. allMsgs still holds the full
+    // history in memory for /find and the transcript export, which is cheap -- it is
+    // the rendered nodes that cost, not the data.
+    while(msgs.childElementCount > MAX_DOM_MSGS){ msgs.removeChild(msgs.firstElementChild); }
     if(nearBottom) msgs.scrollTop = msgs.scrollHeight;
   }
 
