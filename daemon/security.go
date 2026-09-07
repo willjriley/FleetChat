@@ -60,6 +60,7 @@ var mustPOST = map[string]bool{
 	"/control/respawn":         true,
 	"/control/interrupt":       true,
 	"/control/kick":            true,
+	"/control/pause":           true, // per-member pause switch (pause.go)
 	"/control/pick":            true,
 	"/control/voices/download": true, // spawns the Kokoro downloader
 	"/control/speaker":         true, // spawns/stops the voice speaker

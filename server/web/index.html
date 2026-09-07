@@ -47,6 +47,13 @@
   .agent .dots i:nth-child(3){animation-delay:.38s}
   .agent .stopbtn{display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:#c0392b;cursor:pointer;font-size:11px;line-height:1;padding:0 2px;margin-left:3px;flex:none;opacity:.75}
   .agent .stopbtn:hover{opacity:1;transform:scale(1.12)}
+  /* per-member pause: on the crew, off the board (the daemon refuses to wake it) */
+  .agent .pausebtn{display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:12px;line-height:1;padding:0 3px;flex:none;opacity:.6}
+  .agent .pausebtn:hover{opacity:1;transform:scale(1.12)}
+  .agent.paused .av,.agent.paused .nm,.agent.paused .clibadge{opacity:.38;filter:grayscale(1)}
+  .agent.paused .pausebtn{color:#d97706;opacity:1}
+  .agent .pbadge{flex:none;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;padding:1px 5px;border-radius:6px;color:#d97706;border:1px solid #d97706}
+  .tag.paused{opacity:.55;text-decoration:line-through}
   @keyframes tdot{0%,70%,100%{opacity:.2}35%{opacity:1}}
   .agent .spk{display:none;flex:none;font-size:12px;line-height:1;animation:spulse 1.1s infinite}
   .agent .spk.on{display:inline-block}
@@ -488,7 +495,8 @@
     agents.innerHTML="";
     rosterList.forEach(function(a){
       var name=a.id;
-      var row=document.createElement("div"); row.className="agent"; row.title=a.role||"";
+      var paused=!!a.paused;   // from /roster: the daemon's switch, not a client guess
+      var row=document.createElement("div"); row.className="agent"+(paused?" paused":""); row.title=paused?"paused — on the crew, but the board will not wake it":(a.role||"");
       row.appendChild(av(name));
       var nm=document.createElement("span"); nm.className="nm"; nm.textContent=a.name||name;
       nm.style.cursor="pointer"; nm.title="Double-click to edit "+(a.name||name);
@@ -497,17 +505,46 @@
       var cli=document.createElement("span"); cli.className="clibadge cli-"+clin; cli.textContent=clin; cli.title="launched via the "+clin+" CLI";
       var dots=document.createElement("span"); dots.className="dots"+(typingSet[name]?" on":""); dots.innerHTML="<i>&#8226;</i><i>&#8226;</i><i>&#8226;</i>"; dots.title="working on a reply";
       var spk=document.createElement("span"); spk.className="spk"+(speakingSet[name]?" on":""); spk.textContent="🔊"; spk.title="speaking now";
-      var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm); nmwrap.appendChild(dots); nmwrap.appendChild(spk);
-      if(typingSet[name]){ // a Stop button shows ONLY while the agent is working; cancels its in-flight turn
-        var stop=document.createElement("button"); stop.type="button"; stop.className="stopbtn"; stop.textContent="⏹";
-        stop.title="Stop "+(a.name||name)+" — cancels the turn it's working on";
-        stop.addEventListener("click", function(e){ e.stopPropagation(); stopAgent(name); });
-        nmwrap.appendChild(stop);
+      var nmwrap=document.createElement("span"); nmwrap.className="nmwrap"; nmwrap.appendChild(nm);
+      if(paused){
+        var pb=document.createElement("span"); pb.className="pbadge"; pb.textContent="paused"; nmwrap.appendChild(pb);
+      } else {
+        nmwrap.appendChild(dots); nmwrap.appendChild(spk);
+        if(typingSet[name]){ // a Stop button shows ONLY while the agent is working; cancels its in-flight turn
+          var stop=document.createElement("button"); stop.type="button"; stop.className="stopbtn"; stop.textContent="⏹";
+          stop.title="Stop "+(a.name||name)+" — cancels the turn it's working on";
+          stop.addEventListener("click", function(e){ e.stopPropagation(); stopAgent(name); });
+          nmwrap.appendChild(stop);
+        }
+      }
+      if(pauseOK){ // the pause switch exists only when the daemon enforces it (probeCapabilities)
+        var pz=document.createElement("button"); pz.type="button"; pz.className="pausebtn"; pz.textContent=paused?"▶":"⏸";
+        pz.title=paused?("Resume "+(a.name||name)+" — the board may wake it again")
+                       :("Pause "+(a.name||name)+" — stays on the crew, but nothing on the board will wake it (use this while driving it from a CLI)");
+        pz.addEventListener("click", function(e){ e.stopPropagation(); pauseAgent(name, !paused); });
+        nmwrap.appendChild(pz);
       }
       row.appendChild(nmwrap);
       row.appendChild(cli); // its OWN fixed-width column after the flexible name block
       agents.appendChild(row);
     });
+  }
+  function pauseAgent(name, on){
+    // The switch lives in the DAEMON (routing refuses to wake a paused member); the page only
+    // flips it and re-reads /roster, so what the sidebar shows is always the enforced state.
+    fetch("/control/pause",{method:"POST",headers:headers({"Content-Type":"application/json"}),
+      body:JSON.stringify({agent:name, paused:!!on})})
+      .then(function(r){
+        if(r.status===401){ askToken(); return; }
+        if(r.status>=400){ return r.text().then(function(t){ var m; try{ m=JSON.parse(t).error; }catch(e){} alert((on?"Pause":"Resume")+" failed: "+(m||("HTTP "+r.status))); }); }
+        if(on) typingSet[name]=false;
+        loadRoster();
+      })
+      .catch(function(){});
+  }
+  function pausedTargets(list){
+    // Which of these @targets are paused, per the last /roster read.
+    return (list||[]).filter(function(n){ return n!=="all" && rosterMap[n] && rosterMap[n].paused; });
   }
   function stopAgent(name){
     // "Stop" = soft-interrupt the agent's in-flight turn (a control_request to the CLI). The
@@ -1066,6 +1103,7 @@
     var head="<tr><th>agent</th><th>role</th><th>now</th></tr>";
     var rows=rosterList.map(function(a){
       var name=a.id, st=[];
+      if(a.paused) st.push("⏸ paused (not wakeable)");
       if(typingSet[name]) st.push("⌨️ typing");
       if(speakingSet[name]) st.push("🔊 speaking");
       return "<tr><td><b>"+esc(a.name||name)+"</b></td><td>"+esc(a.role||"")+"</td>"+
@@ -1211,6 +1249,11 @@
     // carve-out the feature is unusable: replying without typing an @name --
     // the entire point -- would be rejected by the composer.
     if(!to.length && !(replyThread && threadsOK)){ needTarget(); return; }   // require an explicit @target -- no accidental broadcast
+    // A paused member cannot be @-addressed. The daemon would refuse the wake anyway (that is
+    // where the rule is enforced); the page refuses the SEND so the operator never believes a
+    // paused member got the message. Remove the tag, or resume them from the sidebar.
+    var pz=pausedTargets(to);
+    if(pz.length){ showRouteWarning("@"+pz.join(", @")+" is paused and cannot be tagged — remove the @tag, or press ▶ next to the name to resume."); return; }
     $("#send").disabled=true;
     fetch("/post", {method:"POST", headers:headers({"Content-Type":"application/json"}),
       body:JSON.stringify(threadsOK
@@ -1244,7 +1287,7 @@
     // Addressable set = the CURRENT roster only. Deliberately NOT `counts` (post history), which
     // resurrects removed agents and includes the operator (you). @all stays first (explicit broadcast).
     var set={};
-    rosterList.forEach(function(a){ if(a && a.id) set[a.id]=1; });
+    rosterList.forEach(function(a){ if(a && a.id && !a.paused) set[a.id]=1; });   // a paused member is not offered: it cannot be tagged
     delete set["all"];
     var me=($("#who").value||"").trim().toLowerCase(); if(me) delete set[me]; // never offer to @-address yourself
     return ["all"].concat(Object.keys(set).sort());
@@ -1303,13 +1346,13 @@
   // unreachable one, or a failed probe all land on the previous behaviour, which
   // is safe because it demands an explicit @target. Guessing YES would restore
   // exactly the silent-send bug.
-  var threadsOK=false;
+  var threadsOK=false, pauseOK=false;
   function probeCapabilities(){
     return fetch("/capabilities", {headers:headers({})})
       .then(function(r){ return r.ok?r.json():{}; })
-      .then(function(d){ threadsOK = !!(d && d.threads); })
-      .catch(function(){ threadsOK=false; })
-      .then(function(){ if(!threadsOK) cancelReply(); });
+      .then(function(d){ threadsOK = !!(d && d.threads); pauseOK = !!(d && d.pause); })
+      .catch(function(){ threadsOK=false; pauseOK=false; })
+      .then(function(){ if(!threadsOK) cancelReply(); renderAgents(); });
   }
 
   function meNow(){ return (($("#who").value||"you").trim()).toLowerCase(); }
@@ -1420,8 +1463,10 @@
     if(!out.length){ box.style.display="none"; return; }
     box.style.display="flex";
     out.forEach(function(n){
-      var chip=document.createElement("span"); chip.className="tag"+(n==="all"?" all":"");
-      chip.appendChild(document.createTextNode(n==="all"?"@all · everyone":"@"+n));   // textContent path -> XSS-safe
+      var pz=(n!=="all" && rosterMap[n] && rosterMap[n].paused);
+      var chip=document.createElement("span"); chip.className="tag"+(n==="all"?" all":"")+(pz?" paused":"");
+      if(pz) chip.title="paused — this @tag will not send; remove it or resume the member";
+      chip.appendChild(document.createTextNode(n==="all"?"@all · everyone":(pz?"@"+n+" · paused":"@"+n)));   // textContent path -> XSS-safe
       var x=document.createElement("button"); x.type="button"; x.className="tagx"; x.textContent="×"; x.title="remove";
       x.addEventListener("click", function(){ removeMention(n); });
       chip.appendChild(x); box.appendChild(chip);

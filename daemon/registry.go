@@ -43,6 +43,10 @@ type Registry struct {
 	agents    map[string]*Agent
 	onMessage func(agentID, text string) // wired once, from main.go, to Board.Post
 	typing    map[string]time.Time       // id -> last activity; entries older than typingTTL are stale
+	// paused: members the daemon refuses to wake (see pause.go). Keyed by id,
+	// separate from the Agent so a respawn/restart of the process keeps the
+	// switch; lazily allocated by SetPaused so the constructors stay untouched.
+	paused map[string]bool
 	// repoRoot locates data/sessions.json. "" disables session persistence
 	// entirely (used by tests), which degrades to today's behaviour -- every
 	// spawn starts fresh -- rather than erroring.

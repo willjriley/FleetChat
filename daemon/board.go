@@ -337,10 +337,23 @@ func (b *Board) Post(sender, text string, tags []string, to []string) PostResult
 
 func (b *Board) PostMsg(o PostOpts) PostResult {
 	sender, text, tags, to := o.Sender, o.Text, o.Tags, o.To
-	agents := b.reg.All()
+	// Routing works off the ACTIVE crew: a paused member (pause.go) is on the
+	// board but un-wakeable, so it is left out of the id list every wake path
+	// resolves against -- @name, structured `to`, @all, the operator broadcast
+	// and conversation auto-addressing all fall out of this one exclusion.
+	agents := b.reg.Active()
 	ids := make([]string, len(agents))
 	for i, a := range agents {
 		ids[i] = a.id
+	}
+	// crewIDs is EVERYONE, paused included: a paused member addressed by name is
+	// reported as paused (below), never as "not on this board".
+	crewIDs := ids
+	if all := b.reg.All(); len(all) != len(agents) {
+		crewIDs = make([]string, len(all))
+		for i, a := range all {
+			crewIDs[i] = a.id
+		}
 	}
 	// Merge any deliberate @name in the body INTO the explicit recipient list
 	// BEFORE the message is stored, so `To` (the durable, auditable field) and the
@@ -348,6 +361,12 @@ func (b *Board) PostMsg(o PostOpts) PostResult {
 	// and therefore wakes. (A bare name, no @, adds no one.) resolveRecipients then
 	// works off this one merged list; the sender is never woken by their own tag.
 	to = mergeAtMentions(to, text, ids)
+	// A message that names ONLY paused members is addressed -- to nobody
+	// wakeable. Left alone it would look unaddressed (its @names merged into
+	// nothing) and fall through to the operator's plain-broadcast default,
+	// waking the whole crew EXCEPT the one person named. Remember the fact
+	// here, before auto-addressing can add conversation members to `to`.
+	onlyPaused := len(to) == 0 && len(pausedAddressed(o.To, text, b.reg.IsPaused)) > 0
 
 	b.mu.Lock()
 	id := b.nextID
@@ -404,6 +423,9 @@ func (b *Board) PostMsg(o PostOpts) PostResult {
 	b.mu.Unlock()
 
 	recipients := resolveRecipients(sender, to, ids)
+	if onlyPaused && len(to) == 0 {
+		recipients = map[string]bool{} // addressed to paused members only: not a broadcast
+	}
 	// Quiet is an acknowledgement, not a summons: it still joins the thread and
 	// is still recorded with its full recipient list (so the board shows who it
 	// was for), but it wakes nobody.
@@ -457,8 +479,12 @@ func (b *Board) PostMsg(o PostOpts) PostResult {
 	// deliberate note -- but it must be visible, because silence is what let a
 	// misaddressed message look successful.
 	res := PostResult{BoardMessage: msg, Woke: engaged}
-	if unknown := unknownMentions(text, ids); len(unknown) > 0 {
+	if unknown := unknownMentions(text, crewIDs); len(unknown) > 0 {
 		res.Warning = "these @names are not on this board and were not woken: " + strings.Join(unknown, ", ")
+	} else if paused := pausedAddressed(to, text, b.reg.IsPaused); len(paused) > 0 {
+		// Addressed but paused: say so. Fewer people reached than named must
+		// never look like delivery.
+		res.Warning = "paused and not woken: " + strings.Join(paused, ", ")
 	} else if len(engaged) == 0 {
 		res.Warning = "this message woke nobody -- no @name matched a crew member"
 	}

@@ -243,6 +243,7 @@ func main() {
 			Dir       string   `json:"dir"` // the agent's home folder (its cwd), for the Edit dialog to show
 			FullPerms bool     `json:"full_perms"`
 			Args      []string `json:"args"` // operator-supplied extra CLI arguments, so Edit can prefill them
+			Paused    bool     `json:"paused"` // on the crew but un-wakeable (pause.go); shown, not hidden
 		}
 		out := make([]rosterEntry, 0)
 		for _, a := range reg.All() {
@@ -250,7 +251,7 @@ func main() {
 			if cli == "" {
 				cli = "claude" // the default backend when the roster doesn't set one
 			}
-			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder, FullPerms: a.opts.FullPermissions, Args: a.opts.ExtraArgs})
+			out = append(out, rosterEntry{ID: a.id, Name: a.info.Name, Role: "", CLI: cli, Dir: a.opts.Folder, FullPerms: a.opts.FullPermissions, Args: a.opts.ExtraArgs, Paused: reg.IsPaused(a.id)})
 		}
 		// reg.All() walks a Go map -- deliberately randomized iteration order by
 		// language design -- so without this sort the sidebar reshuffles on every
@@ -282,6 +283,8 @@ func main() {
 			// what it may do, and a version would force it to keep a table
 			// mapping versions onto behaviour.
 			"threads": true,
+			// Per-member pause (POST /control/pause; /roster carries `paused`).
+			"pause": true,
 		})
 	})
 
@@ -683,8 +686,12 @@ func main() {
 			return
 		}
 		rosterRemove(repoRoot, body.Agent)
+		reg.SetPaused(body.Agent, false) // a kicked name must not come back paused if re-added
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "kicked": body.Agent})
 	})
+
+	// Per-member pause: on the crew, off the board. See pause.go.
+	registerPauseRoutes(mux, reg, repoRoot)
 
 	mux.HandleFunc("/control/respawn", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -1052,6 +1059,12 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 		if err != nil {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue
+		}
+		if e.Paused {
+			// Restored BEFORE the join announcement so nothing can wake the member
+			// in the window between spawn and switch.
+			reg.SetPaused(a.id, true)
+			log.Printf("[daemon] %q comes back PAUSED (roster) -- on the crew, not wakeable until unpaused", e.Name)
 		}
 		announceJoin(board, a.id)
 		if e.Dir != "" {
