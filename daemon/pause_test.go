@@ -316,6 +316,85 @@ func TestASpawnedProcessInheritsARecordedPause(t *testing.T) {
 	}
 }
 
+// A teammate that tags a paused member must be TOLD (operator request): the
+// composer and the HTTP warning only reach a human. Once per pause per pair --
+// the notice is itself a wake, so without the ledger a teammate answering it by
+// tagging the paused member again would be told again, forever.
+func TestAnAgentTaggingAPausedMemberIsToldOncePerPause(t *testing.T) {
+	b := threadCrew()
+	alice, carol := b.reg.agents["alice"], b.reg.agents["carol"]
+	b.reg.SetPaused("bob", true)
+
+	r := b.Post("alice", "@bob can you take this one", nil, nil)
+	eq(t, wokeSorted(r), nil) // bob is paused; alice never wakes herself
+	if n := len(alice.sendCh); n != 1 {
+		t.Fatalf("alice must get exactly one notice turn; got %d", n)
+	}
+	job := <-alice.sendCh
+	for _, needed := range []string{"@bob", "placed on pause", "operator reactivates", "Do not wait"} {
+		if !strings.Contains(job.text, needed) {
+			t.Errorf("notice must say %q; got %q", needed, job.text)
+		}
+	}
+	// The same fact is on the board for the operator, from the reserved sender.
+	seen := false
+	for _, m := range b.Since(0) {
+		if m.Sender == "board" && strings.Contains(m.Text, "alice") && strings.Contains(m.Text, "@bob") {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("a visible board note must record that alice's message did not reach bob")
+	}
+	for id, a := range b.reg.agents {
+		if n := len(a.sendCh); n != 0 {
+			t.Errorf("the board note must wake nobody; %s has %d queued turn(s)", id, n)
+		}
+	}
+
+	// Tagging bob again during the same pause earns no second notice.
+	b.Post("alice", "@bob still there?", nil, nil)
+	if n := len(alice.sendCh); n != 0 {
+		t.Fatalf("second notice for the same pause: %d queued", n)
+	}
+	// A different teammate is told on its own account.
+	b.Post("carol", "@bob ping", nil, nil)
+	if n := len(carol.sendCh); n != 1 {
+		t.Fatalf("carol must be told once; got %d", n)
+	}
+	<-carol.sendCh
+	// Reactivated, then paused again: the ledger resets, alice is told again.
+	b.reg.SetPaused("bob", false)
+	b.reg.SetPaused("bob", true)
+	b.Post("alice", "@bob are you back?", nil, nil)
+	if n := len(alice.sendCh); n != 1 {
+		t.Fatalf("a new pause is a new notice; got %d", n)
+	}
+}
+
+func TestAHumanTaggingAPausedMemberTriggersNoAgentNotice(t *testing.T) {
+	b := threadCrew()
+	b.reg.SetPaused("bob", true)
+	r := b.Post("owner", "@bob are you there", nil, nil)
+	if !strings.Contains(r.Warning, "paused") {
+		t.Errorf("the human poster is told by the warning; got %q", r.Warning)
+	}
+	for id, a := range b.reg.agents {
+		if n := len(a.sendCh); n != 0 {
+			t.Errorf("no agent should be woken for a human's miss; %s has %d", id, n)
+		}
+	}
+}
+
+func TestProtocolRulesExplainPausedMembers(t *testing.T) {
+	r := protocolRules()
+	for _, needed := range []string{"PAUSED MEMBERS", "\"paused\": true", "reactivates", "do not wait"} {
+		if !strings.Contains(r, needed) {
+			t.Errorf("crew rules must explain pausing (%q missing)", needed)
+		}
+	}
+}
+
 func hasName(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {

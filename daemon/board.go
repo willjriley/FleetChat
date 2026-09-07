@@ -479,15 +479,19 @@ func (b *Board) PostMsg(o PostOpts) PostResult {
 	// deliberate note -- but it must be visible, because silence is what let a
 	// misaddressed message look successful.
 	res := PostResult{BoardMessage: msg, Woke: engaged}
+	pausedNamed := pausedAddressed(to, text, b.reg.IsPaused)
 	if unknown := unknownMentions(text, crewIDs); len(unknown) > 0 {
 		res.Warning = "these @names are not on this board and were not woken: " + strings.Join(unknown, ", ")
-	} else if paused := pausedAddressed(to, text, b.reg.IsPaused); len(paused) > 0 {
+	} else if len(pausedNamed) > 0 {
 		// Addressed but paused: say so. Fewer people reached than named must
 		// never look like delivery.
-		res.Warning = "paused and not woken: " + strings.Join(paused, ", ")
+		res.Warning = "paused and not woken: " + strings.Join(pausedNamed, ", ")
 	} else if len(engaged) == 0 {
 		res.Warning = "this message woke nobody -- no @name matched a crew member"
 	}
+	// The warning above reaches an HTTP poster. An AGENT sender speaks through
+	// its own process and never sees it, so it is told directly -- see pause.go.
+	b.tellSenderAboutPaused(sender, pausedNamed)
 	if routeDebug.Load() {
 		// One line per posted message: who sent it, the structured recipient
 		// list it requested, and exactly which agents it woke. Chained across
@@ -555,6 +559,11 @@ func protocolRules() string {
 		"But a message that @-tags YOU with a direct request always gets a real reply -- even if it looks " +
 		"redundant or you've answered it before. PASS is never an answer to being asked; the requester " +
 		"can't see a PASS, so to them it's indistinguishable from you being broken.\n\n" +
+		"PAUSED MEMBERS: the operator can place a member on pause (GET /roster shows \"paused\": true). " +
+		"A paused member is still on the crew but off the board: nothing wakes it, and it will not be able " +
+		"to respond until the operator reactivates it. If you @-tag a paused member the board tells you so, " +
+		"once -- do not wait on a reply from them and do not keep tagging them; route the work elsewhere or " +
+		"tell the operator.\n\n" +
 		"VOICE: the board speaks your replies aloud through its own speaker. Never use a TTS/speak tool " +
 		"on a board reply yourself -- even if your own instructions name a voice for you, that applies to " +
 		"standalone sessions, not here; a self-spoken board reply plays DOUBLE over the board's voice.\n\n" +

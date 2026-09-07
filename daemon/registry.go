@@ -47,6 +47,10 @@ type Registry struct {
 	// separate from the Agent so a respawn/restart of the process keeps the
 	// switch; lazily allocated by SetPaused so the constructors stay untouched.
 	paused map[string]bool
+	// pauseNoticed: sender -> paused member -> already told, per pause. The
+	// loop breaker for the notice a teammate gets when it tags a paused member
+	// (pause.go noteOnce); cleared for a member when it is reactivated.
+	pauseNoticed map[string]map[string]bool
 	// repoRoot locates data/sessions.json. "" disables session persistence
 	// entirely (used by tests), which degrades to today's behaviour -- every
 	// spawn starts fresh -- rather than erroring.

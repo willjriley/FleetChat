@@ -56,6 +56,11 @@ func (r *Registry) SetPaused(id string, on bool) (dropped int) {
 		r.paused[id] = true
 	} else {
 		delete(r.paused, id)
+		// Reactivated: every teammate that was told about the pause may be told
+		// again next time -- the ledger below is per pause, not forever.
+		for _, told := range r.pauseNoticed {
+			delete(told, id)
+		}
 	}
 	a := r.agents[id]
 	r.mu.Unlock()
@@ -67,6 +72,80 @@ func (r *Registry) SetPaused(id string, on bool) (dropped int) {
 		dropped = a.drainQueue()
 	}
 	return dropped
+}
+
+// noteOnce records that `sender` has been told `member` is paused, and reports
+// whether this is the FIRST time for this pause. One notice per pair per pause
+// is the loop breaker: the notice itself is a wake, and a teammate that
+// answered it by tagging the paused member again would otherwise earn another
+// notice, forever. Cleared for the member when it is reactivated (SetPaused).
+func (r *Registry) noteOnce(sender, member string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pauseNoticed == nil {
+		r.pauseNoticed = map[string]map[string]bool{}
+	}
+	told := r.pauseNoticed[sender]
+	if told == nil {
+		told = map[string]bool{}
+		r.pauseNoticed[sender] = told
+	}
+	if told[member] {
+		return false
+	}
+	told[member] = true
+	return true
+}
+
+// pausedNoticeText is what a teammate is told when it addressed a paused
+// member. It says the three things the sender needs: who, that the operator
+// did it, and that nothing will come back until the operator undoes it.
+func pausedNoticeText(members []string) string {
+	names := "@" + strings.Join(members, ", @")
+	verb, pron := "has", "them"
+	if len(members) > 1 {
+		verb = "have"
+	}
+	return names + " " + verb + " been placed on pause by the operator and will not be able to respond " +
+		"until the operator reactivates " + pron + ". Your message was posted to the board but did not " +
+		"wake " + pron + ". Do not wait on a reply from " + names + " and do not tag " + pron + " again " +
+		"until they are back -- route the work elsewhere or tell the operator."
+}
+
+// tellSenderAboutPaused closes the gap between what the operator sees and what
+// a teammate sees. The composer refuses to tag a paused member and the HTTP
+// poster gets a warning, but an AGENT sender speaks through its own process
+// and would otherwise hear nothing: its message reaches nobody and it waits
+// for a reply that cannot come. So, once per (sender, member) per pause:
+//   - a visible board note from the reserved "board" sender, which wakes no
+//     one, so the operator can see the miss in the chat; and
+//   - a direct turn to the sender with the same notice, so it can route the
+//     work elsewhere instead of waiting.
+//
+// Only real crew senders are told: a human sender was already told by the
+// page or the warning, and the "board" sender is the notice itself.
+func (b *Board) tellSenderAboutPaused(sender string, paused []string) {
+	if len(paused) == 0 || sender == "board" {
+		return
+	}
+	a, ok := b.reg.Get(sender)
+	if !ok {
+		return
+	}
+	fresh := paused[:0:0]
+	for _, m := range paused {
+		if b.reg.noteOnce(sender, m) {
+			fresh = append(fresh, m)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	text := pausedNoticeText(fresh)
+	b.Post("board", "Note for "+sender+": "+text, []string{"pause"}, nil)
+	if err := a.SendPrompt(messageEnvelope("board", text)); err != nil {
+		log.Printf("[pause] could not tell %q about paused %v: %s", sender, fresh, err)
+	}
 }
 
 // settleBootstrappedAgent is the step between a roster spawn and the join
