@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The pause rule is enforced in ROUTING, so every test here posts through the
@@ -222,6 +225,94 @@ func TestPauseDropsATurnQueuedAfterTheSwitch(t *testing.T) {
 	reg.SetPaused("bob", false)
 	if a.paused.Load() {
 		t.Error("unpause must clear the agent-side switch")
+	}
+}
+
+// The three halves of the backlog fix, each pinned on its own (review nits):
+// the send loop's write-time check, the drain's count, and the respawn carry.
+// pause_backlog_test.go covers them together, so reverting any ONE half stayed
+// green there -- the other half caught the turns.
+
+func TestSendLoopDiscardsWhilePausedEvenWhenNothingWasDrained(t *testing.T) {
+	var buf bytes.Buffer
+	a := &Agent{id: "bob", sendCh: make(chan sendJob, 8), exited: make(chan struct{}), in: bufio.NewWriter(&buf)}
+	go a.sendLoop()
+	defer close(a.exited)
+	a.paused.Store(true) // the switch alone -- no drain has run, the loop is already live
+	for _, txt := range []string{"race-1", "race-2"} {
+		if err := a.sendPrompt(txt, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	a.mu.Lock()
+	got := buf.String()
+	a.mu.Unlock()
+	if strings.Contains(got, "race-") {
+		t.Fatalf("the send loop wrote a turn to a paused member: %q", got)
+	}
+	// Resumed: the next turn flows.
+	a.paused.Store(false)
+	if err := a.sendPrompt("after-resume", false); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	a.mu.Lock()
+	got = buf.String()
+	a.mu.Unlock()
+	if !strings.Contains(got, "after-resume") {
+		t.Fatalf("a resumed member must receive turns again; stdin got %q", got)
+	}
+}
+
+func TestPauseReportsHowManyQueuedTurnsItDropped(t *testing.T) {
+	a := stubAgent("bob") // no send loop: the backlog just sits in the queue
+	reg := NewRegistry()
+	reg.agents["bob"] = a
+	for _, txt := range []string{"q-1", "q-2", "q-3"} {
+		if err := a.sendPrompt(txt, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := reg.SetPaused("bob", true); n != 3 {
+		t.Fatalf("pausing over a backlog of 3 must report dropped=3; got %d", n)
+	}
+	if n := len(a.sendCh); n != 0 {
+		t.Fatalf("the backlog must be gone after the pause; %d still queued", n)
+	}
+	if n := reg.SetPaused("bob", true); n != 0 {
+		t.Fatalf("pausing again over an empty queue reports 0; got %d", n)
+	}
+	if n := reg.SetPaused("bob", false); n != 0 {
+		t.Fatalf("an unpause drops nothing; got %d", n)
+	}
+}
+
+func TestASpawnedProcessInheritsARecordedPause(t *testing.T) {
+	// A respawn (Edit dialog, restart-all, a boot from the roster) creates a NEW
+	// Agent for an id whose pause is recorded in the registry. The fresh process
+	// must carry the switch from its very first write, or the pause would
+	// silently end at the next restart. Goes through the real Spawn: the process
+	// is this test binary handed claude's flags, which exits at once -- any
+	// process will do, because the switch is copied at spawn, before any write.
+	t.Setenv("FLEETCHAT_CLAUDE", os.Args[0])
+	r := NewRegistry()
+	r.SetPaused("alice", true) // recorded while no process exists
+	a, err := r.Spawn("alice", AgentOptions{}, AgentInfo{Name: "alice", ID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Kill("alice") })
+	if !a.paused.Load() {
+		t.Fatal("a spawned member with a recorded pause must start paused")
+	}
+	b, err := r.Spawn("bob", AgentOptions{}, AgentInfo{Name: "bob", ID: "bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Kill("bob") })
+	if b.paused.Load() {
+		t.Fatal("a member with no recorded pause must start wakeable")
 	}
 }
 
