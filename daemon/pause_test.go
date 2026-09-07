@@ -179,6 +179,52 @@ func TestPauseEndpointIsOperatorOnlyAndPersists(t *testing.T) {
 	}
 }
 
+func TestBootstrapRestoresPauseBeforeTheJoinAnnouncement(t *testing.T) {
+	// Restart survival's last mile: a roster entry recorded as paused must yield
+	// a paused member after bootstrap. Disabling the re-apply used to pass the
+	// whole suite (review F2); this pins it. The board here is real, so the join
+	// is actually posted, after the switch.
+	reg := NewRegistry()
+	reg.agents["bob"] = stubAgent("bob")
+	b := NewBoard(reg, "")
+	settleBootstrappedAgent(reg, b, reg.agents["bob"], RosterEntry{Name: "bob", Paused: true})
+	if !reg.IsPaused("bob") {
+		t.Fatal("a member the roster records as paused must come back paused")
+	}
+	msgs := b.Since(0)
+	if len(msgs) != 1 || msgs[0].Sender != "bob" || !hasName(msgs[0].Tags, "join") {
+		t.Errorf("the join must still be announced (after the switch); got %+v", msgs)
+	}
+	// And an entry NOT recorded as paused stays wakeable.
+	reg.agents["carol"] = stubAgent("carol")
+	settleBootstrappedAgent(reg, b, reg.agents["carol"], RosterEntry{Name: "carol"})
+	if reg.IsPaused("carol") {
+		t.Error("no pause recorded -> not paused")
+	}
+}
+
+func TestPauseDropsATurnQueuedAfterTheSwitch(t *testing.T) {
+	// The enqueue-versus-pause race: routing has already accepted a wake when
+	// the pause lands. The send loop must drop it rather than write it.
+	a := stubAgent("bob")
+	reg := NewRegistry()
+	reg.agents["bob"] = a
+	if n := reg.SetPaused("bob", true); n != 0 {
+		t.Fatalf("nothing queued yet; dropped=%d", n)
+	}
+	if err := a.sendPrompt("late wake", false); err != nil {
+		t.Fatal(err)
+	}
+	if n := a.drainQueue(); n != 1 {
+		t.Fatalf("the late wake should be sitting in the queue; drained %d", n)
+	}
+	// Once resumed, a queued turn flows again (drain returns 0 for an empty queue).
+	reg.SetPaused("bob", false)
+	if a.paused.Load() {
+		t.Error("unpause must clear the agent-side switch")
+	}
+}
+
 func hasName(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {

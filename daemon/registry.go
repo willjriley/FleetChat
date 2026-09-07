@@ -163,6 +163,9 @@ func (r *Registry) Spawn(id string, opts AgentOptions, info AgentInfo) (*Agent, 
 		return nil, err
 	}
 	a.info = info
+	// A respawned or restarted member keeps its pause: the switch is keyed by id
+	// in r.paused, and the fresh Agent must carry it from its first write.
+	a.paused.Store(r.paused[id])
 	// Persist the live session id so the NEXT spawn of this id can resume it.
 	// Fires from readLoop's goroutine on system/init, so it must not touch r.mu
 	// -- saveSession has its own file lock.

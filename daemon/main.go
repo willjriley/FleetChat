@@ -1060,13 +1060,7 @@ func bootstrapFleet(repoRoot string, reg *Registry, board *Board) {
 			log.Printf("[daemon] failed to bootstrap %q: %s", e.Name, err)
 			continue
 		}
-		if e.Paused {
-			// Restored BEFORE the join announcement so nothing can wake the member
-			// in the window between spawn and switch.
-			reg.SetPaused(a.id, true)
-			log.Printf("[daemon] %q comes back PAUSED (roster) -- on the crew, not wakeable until unpaused", e.Name)
-		}
-		announceJoin(board, a.id)
+		settleBootstrappedAgent(reg, board, a, e) // re-applies a recorded pause, then announces the join
 		if e.Dir != "" {
 			log.Printf("[daemon] bootstrapped %q from the roster -- running in its own folder %q", e.Name, e.Dir)
 		} else {

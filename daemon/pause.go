@@ -39,9 +39,16 @@ import (
 
 // SetPaused marks a member un-wakeable (on) or wakeable again (off). The live
 // process is left alone: it keeps its session and simply receives no turns.
-func (r *Registry) SetPaused(id string, on bool) {
+//
+// A wake is a job in the member's own send queue, written to stdin by its send
+// loop later -- so routing alone is not enough: turns ALREADY queued before
+// the pause would still be delivered after it (found in review: three queued,
+// three delivered). Both ends are closed here. The switch is mirrored onto the
+// Agent (a.paused), where the send loop consults it before every write, and the
+// backlog is drained now; the count is returned so the operator can be told how
+// many turns the pause discarded.
+func (r *Registry) SetPaused(id string, on bool) (dropped int) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.paused == nil {
 		r.paused = map[string]bool{}
 	}
@@ -50,6 +57,30 @@ func (r *Registry) SetPaused(id string, on bool) {
 	} else {
 		delete(r.paused, id)
 	}
+	a := r.agents[id]
+	r.mu.Unlock()
+	if a == nil {
+		return 0
+	}
+	a.paused.Store(on)
+	if on {
+		dropped = a.drainQueue()
+	}
+	return dropped
+}
+
+// settleBootstrappedAgent is the step between a roster spawn and the join
+// announcement: a member the roster records as paused comes back paused, and
+// the switch is set BEFORE anything is posted about it, so there is no window
+// in which a boot-time message could wake a member the operator had silenced.
+// Pulled out of bootstrapFleet so this last mile of restart-survival is
+// testable without spawning a process.
+func settleBootstrappedAgent(reg *Registry, board *Board, a *Agent, e RosterEntry) {
+	if e.Paused {
+		reg.SetPaused(a.id, true)
+		log.Printf("[daemon] %q comes back PAUSED (roster) -- on the crew, not wakeable until unpaused", e.Name)
+	}
+	announceJoin(board, a.id)
 }
 
 // IsPaused reports whether a member is currently un-wakeable.
@@ -174,7 +205,7 @@ func registerPauseRoutes(mux *http.ServeMux, reg *Registry, repoRoot string) {
 			json.NewEncoder(w).Encode(map[string]string{"error": "no such agent"})
 			return
 		}
-		reg.SetPaused(body.Agent, *body.Paused)
+		dropped := reg.SetPaused(body.Agent, *body.Paused)
 		persisted := rosterSetPaused(repoRoot, body.Agent, *body.Paused)
 		// A pause means "nothing more from this member": a turn already in flight
 		// is cut too, with the same soft interrupt the Stop button uses (process
@@ -192,10 +223,10 @@ func registerPauseRoutes(mux *http.ServeMux, reg *Registry, repoRoot string) {
 				}
 			}
 		}
-		log.Printf("[pause] %q paused=%v persisted=%v interrupted=%v", body.Agent, *body.Paused, persisted, interrupted)
+		log.Printf("[pause] %q paused=%v persisted=%v interrupted=%v dropped_queued_turns=%d", body.Agent, *body.Paused, persisted, interrupted, dropped)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok": true, "agent": body.Agent, "paused": *body.Paused,
-			"persisted": persisted, "interrupted": interrupted,
+			"persisted": persisted, "interrupted": interrupted, "dropped": dropped,
 		})
 	})
 }
