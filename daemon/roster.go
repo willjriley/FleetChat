@@ -32,6 +32,10 @@ type RosterEntry struct {
 	// changes -- hard-coding a fixed set of toggles dates immediately, and a
 	// description of the command can drift from the command. This cannot.
 	Args []string `json:"args,omitempty"`
+	// Paused: the member stays on the crew and its process stays up, but the
+	// daemon refuses to wake it (see pause.go). Durable so a restart brings the
+	// member back paused rather than silently live again.
+	Paused bool `json:"paused,omitempty"`
 }
 
 // rosterMu serializes the WHOLE read-modify-write-rename cycle in

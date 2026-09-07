@@ -43,6 +43,14 @@ type Registry struct {
 	agents    map[string]*Agent
 	onMessage func(agentID, text string) // wired once, from main.go, to Board.Post
 	typing    map[string]time.Time       // id -> last activity; entries older than typingTTL are stale
+	// paused: members the daemon refuses to wake (see pause.go). Keyed by id,
+	// separate from the Agent so a respawn/restart of the process keeps the
+	// switch; lazily allocated by SetPaused so the constructors stay untouched.
+	paused map[string]bool
+	// pauseNoticed: sender -> paused member -> already told, per pause. The
+	// loop breaker for the notice a teammate gets when it tags a paused member
+	// (pause.go noteOnce); cleared for a member when it is reactivated.
+	pauseNoticed map[string]map[string]bool
 	// repoRoot locates data/sessions.json. "" disables session persistence
 	// entirely (used by tests), which degrades to today's behaviour -- every
 	// spawn starts fresh -- rather than erroring.
@@ -159,6 +167,9 @@ func (r *Registry) Spawn(id string, opts AgentOptions, info AgentInfo) (*Agent, 
 		return nil, err
 	}
 	a.info = info
+	// A respawned or restarted member keeps its pause: the switch is keyed by id
+	// in r.paused, and the fresh Agent must carry it from its first write.
+	a.paused.Store(r.paused[id])
 	// Persist the live session id so the NEXT spawn of this id can resume it.
 	// Fires from readLoop's goroutine on system/init, so it must not touch r.mu
 	// -- saveSession has its own file lock.

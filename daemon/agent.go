@@ -113,6 +113,12 @@ type Agent struct {
 	// stdout nobody was reading, and the board correctly reported "woke [alice]"
 	// because the write genuinely succeeded. Writable is not the same as reachable.
 	readDead atomic.Bool
+	// paused mirrors the registry's pause switch (pause.go) onto the agent, where
+	// the send loop can consult it before every stdin write. Routing stops NEW
+	// wakes at the registry; this stops turns that were already queued, and any
+	// that land in the enqueue-versus-pause race. Set by Registry.SetPaused and
+	// on spawn; never read by routing.
+	paused atomic.Bool
 	// pendingPrivate is a FIFO queue, not a single flag: this process can have
 	// MORE than one turn in flight (a board reply and a private reply sent
 	// close together both queue on the same stdin), and "result" events
@@ -812,9 +818,32 @@ func (a *Agent) sendLoop() {
 	for {
 		select {
 		case job := <-a.sendCh:
+			// A paused member gets nothing: a job that was queued before the pause,
+			// or slipped in after routing accepted it, is discarded here rather
+			// than written. Checked at write time, not enqueue time, so the pause
+			// wins the race whichever side lands first.
+			if a.paused.Load() {
+				log.Printf("[agent %s] paused -- discarding a queued turn", a.id)
+				continue
+			}
 			a.writeTurn(job.text, job.private)
 		case <-a.exited:
 			return
+		}
+	}
+}
+
+// drainQueue discards every turn waiting in this agent's send queue and
+// reports how many. Non-blocking: it takes what is there and returns. Used by
+// a pause, which must silence a member's backlog, not just its future.
+func (a *Agent) drainQueue() int {
+	n := 0
+	for {
+		select {
+		case <-a.sendCh:
+			n++
+		default:
+			return n
 		}
 	}
 }
