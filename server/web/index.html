@@ -1173,8 +1173,8 @@
     // silently does the wrong thing is worse than no affordance.
     if(threadsOK){
     var rb=document.createElement("button"); rb.type="button"; rb.className="replybtn";
-    rb.textContent="reply"; rb.title="Reply in this conversation — everyone in it is addressed automatically";
-    rb.addEventListener("click", function(){ startReply(m.thread||m.id, m.sender); });
+    rb.textContent="reply"; rb.title="Reply — fills the box with @everyone in this conversation so you can just type and send";
+    rb.addEventListener("click", function(){ replyPrefill(m); });
     top.appendChild(rb);
     }
     // Structured recipients, made VISIBLE: who this message actually notified. This is the
@@ -1357,24 +1357,44 @@
 
   function meNow(){ return (($("#who").value||"you").trim()).toLowerCase(); }
 
-  function startReply(thread, sender){
-    replyThread=thread||0; replyDrop=[]; replyQuiet=false; replyTo=sender||""; replyMembers=[];
-    renderReplyBar();                       // show immediately; fill in when members land
-    if(!replyThread) return;
-    // Ask the DAEMON who is in the conversation rather than deriving it here.
-    // One implementation of membership: a JS copy would drift from the Go one,
-    // and the first divergence shows up as a message reaching the wrong people.
-    fetch("/conversation/members?id="+encodeURIComponent(replyThread), {headers:headers({})})
-      .then(function(r){ return r.ok?r.json():{members:[]}; })
-      .then(function(d){
-        if(replyThread!==thread) return;    // a newer reply started while this was in flight
-        var me=meNow();
-        replyMembers=(d.members||[]).filter(function(n){ return n!==me; });
-        renderReplyBar();
-      })
-      .catch(function(){ renderReplyBar(); });
-    $("#text").focus();
+  // replyPrefill: clicking "reply" fills the composer with @-tags for everyone already in
+  // that conversation, focuses it, and drops the caret at the end -- so replying is just
+  // typing and pressing enter, no manual @tagging. Recipients live IN THE COMPOSER (the
+  // chips you see are exactly who gets it, and you can × any of them off) rather than in a
+  // hidden thread that could silently re-add someone you removed. Membership comes from the
+  // daemon (/conversation/members -- one source of truth, same as the reply bar), with the
+  // message's own sender+recipients as the fallback when that's unavailable.
+  function replyPrefill(m){
+    var me=meNow();
+    function fill(names){
+      var uniq=[], seen={};
+      (names||[]).forEach(function(raw){
+        var n=(raw||"").toLowerCase().replace(/^@/,"");
+        if(n && n!==me && n!=="all" && !seen[n]){ seen[n]=1; uniq.push(n); }
+      });
+      var ta=$("#text");
+      // Strip a leading @tag block we (or a prior reply click) put there, so re-clicking
+      // reply on a different message SWAPS the tags instead of stacking them; keep whatever
+      // the user had typed after it.
+      var rest=ta.value.replace(/^\s*(?:@[a-z0-9_-]+\s+)+/i, "");
+      ta.value=(uniq.length ? uniq.map(function(n){ return "@"+n; }).join(" ")+" " : "")+rest;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      renderChips();
+    }
+    var fallback=[m.sender].concat(Array.isArray(m.to)?m.to:[]);
+    if(!threadsOK){ fill(fallback); return; }
+    fetch("/conversation/members?id="+encodeURIComponent(m.thread||m.id), {headers:headers({})})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){ fill(d && d.members && d.members.length ? d.members : fallback); })
+      .catch(function(){ fill(fallback); });
   }
+
+  // NOTE: the reply "button" now calls replyPrefill (composer-tags model, above). The older
+  // thread-arming startReply was removed with it -- recipients live in the composer now, not a
+  // hidden thread. cancelReply/renderReplyBar are kept: cancelReply still clears composer state
+  // on send and on a no-threads daemon, and renderReplyBar keeps the (now always-hidden) reply
+  // bar hidden. replyThread therefore stays 0, so the send path sends no thread/drop/quiet.
   function cancelReply(){ replyThread=0; replyMembers=[]; replyDrop=[]; replyQuiet=false; renderReplyBar(); renderChips(); }
 
   function renderReplyBar(){
